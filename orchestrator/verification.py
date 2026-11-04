@@ -134,15 +134,25 @@ class Verifier:
 
     def _one(self, model: str, system: str, user: str, ticket_id: str) -> dict[str, Any]:
         msgs: list[dict[str, Any]] = [{"role": "user", "content": user}]
+        agent = f"verifier:{model}@{ticket_id}"
         for _ in range(2):
+            try:
+                self.store.set_agent(agent, f"verifier ({model})", "verifier", "verification", ticket_id, "reviewing",
+                                     "independently checking a result", model)
+            except Exception:
+                pass
             c = self.provider.complete(model=model, system=system, messages=msgs)
-            self.store.add_event(ticket_id, "verifier", "usage", {
-                "model": c.model, "input_tokens": c.input_tokens, "output_tokens": c.output_tokens})
+            self.store.record_usage(ticket_id, "verifier", "verification", c, agent)
             if c.refused:
                 return {"model": model, "verdict": "concerns", "issues": [f"verifier model declined ({c.refusal_category})"],
                         "advice": "this check could not run on this model"}
             r = parse_reply(c.text, key="verdict")
             if r and r.get("verdict") in ORDER:
+                try:
+                    self.store.set_agent(agent, f"verifier ({model})", "verifier", "verification", ticket_id, "done",
+                                         f"verdict: {r['verdict']}", model)
+                except Exception:
+                    pass
                 return {"model": model, "verdict": r["verdict"], "issues": [str(i) for i in r.get("issues", [])],
                         "advice": str(r.get("advice", ""))}
             msgs = msgs + [{"role": "assistant", "content": c.text or "(empty)"},

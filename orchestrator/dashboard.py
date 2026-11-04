@@ -92,6 +92,34 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
                  for t in tickets]
 
         resources = [dict(r) for r in c.execute("SELECT * FROM resources ORDER BY name")]
+        try:
+            agents = [dict(r) for r in c.execute("SELECT * FROM agents ORDER BY department, kind DESC, name")]
+        except sqlite3.OperationalError:          # a database from before the agents table
+            agents = []
+        titles = {t["id"]: t["title"] for t in tickets}
+        for a in agents:
+            a["ticket_title"] = titles.get(a["ticket_id"] or "", "")
+        by_id = {t["id"]: t for t in tickets}
+
+        def dept_of(actor: str, ticket_id: str | None) -> str:
+            if actor.endswith("_manager"):
+                return actor.removesuffix("_manager")
+            if actor == "verifier":
+                return "verification"
+            t = by_id.get(ticket_id or "")
+            while t and t.get("parent_id"):
+                t = by_id.get(t["parent_id"])
+            a = (t or {}).get("assignee", "")
+            return a.removesuffix("_manager") if a.endswith("_manager") else "unattributed"
+
+        usage_by_dept: dict[str, dict[str, int]] = {}
+        for r in c.execute("SELECT actor, ticket_id, payload FROM events WHERE type='usage'"):
+            p = json.loads(r["payload"])
+            d = p.get("department") or dept_of(r["actor"], r["ticket_id"])
+            u = usage_by_dept.setdefault(d, {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_hit_tokens": 0})
+            u["calls"] += 1
+            for k in ("input_tokens", "output_tokens", "cache_hit_tokens"):
+                u[k] += int(p.get(k, 0) or 0)
         jobs = [{k: r[k] for k in ("id", "name", "state", "resource", "ticket_id", "exit_code", "started_at")}
                 for r in c.execute("SELECT * FROM jobs ORDER BY started_at DESC LIMIT 15")]
 
@@ -106,8 +134,16 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
         events = [{**dict(r), "payload": json.loads(r["payload"])} for r in c.execute(
             "SELECT * FROM events WHERE type != 'usage' ORDER BY seq DESC LIMIT ?", (event_limit,))]
 
+        integration = None
+        try:
+            from .codework import code_repo_from_cfg
+            repo = code_repo_from_cfg(cfg)
+            integration = repo.integration_status() if repo else None
+        except Exception:
+            integration = None
         return {"needs_human": needs_human, "handling": handling, "code_pending": code_pending, "org": org, "by_status": by_status, "board": board,
-                "resources": resources, "jobs": jobs, "spend": spend, "events": events}
+                "resources": resources, "jobs": jobs, "spend": spend, "events": events, "agents": agents,
+                "usage_by_department": usage_by_dept, "integration": integration}
     finally:
         c.close()
 

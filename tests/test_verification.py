@@ -156,4 +156,5 @@ def test_diverse_worker_rotation(store, tmp_path):
     m = Manager("verification_manager", store, p, cfg, tmp_path, "role", ["m"], ["va", "vb"], diverse_workers=True)
     tid = store.create_ticket(dict(SPEC, assignee="verification_manager", worker_role="worker"), "top_manager")["id"]
     m.work(tid)
-    assert [c["model"] for c in p.calls[1:4]] == ["va", "vb", "va"]
+    # workers run in parallel, so call order varies; the rotation still spreads them across both models
+    assert sorted(c["model"] for c in p.calls[1:4]) == ["va", "va", "vb"]

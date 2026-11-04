@@ -16,6 +16,9 @@ DEFAULTS: dict[str, Any] = {
         "worktrees_dir": None,  # default: <repo>-worktrees next to the repo
         "test_timeout": 600,    # seconds per acceptance command
         "gates": {"secret_scan": True, "extra_commands": []},
+        "review": "manager",    # manager: the Software manager reviews and integrates branches; top_manager: you do (ctl code)
+        "integration_branch": None,   # default: orchestrator/integration (managers merge here; ctl code release -> base branch)
+        "integration_checks": [],     # commands run on the merged result; a merge that breaks them is undone
     },
     "read_roots": [],            # project folders workers may read (never write); secrets are always blocked
     "providers": {
@@ -38,7 +41,13 @@ DEFAULTS: dict[str, Any] = {
         "capability_retry_limit": 3,
         "on_safety_refusal": "retry_once_then_escalate_to_human",
         "max_subworker_depth": 2,
-        "max_children_per_agent": 5,
+        "max_children_per_agent": 8,
+        "max_parallel_tickets": 8,     # top-level tickets (departments) worked at the same time
+        "max_parallel_workers": 4,     # workers per department running at the same time
+        "max_concurrent_calls": 8,     # model calls in flight at once, across everything (provider rate limits)
+        "max_tool_steps": 40,          # tool calls per worker ticket (with a countdown before the end)
+        "max_manager_tool_steps": 25,  # tool calls per manager decision
+        "max_manager_rounds": 20,      # decisions per manager ticket before it is escalated as stuck
         "max_worker_retries": 2,       # manager retries per worker before it must delegate differently or give up
         "default_rigor": "balanced",
         "verification_is_advisory": True,

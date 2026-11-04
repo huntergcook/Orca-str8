@@ -18,8 +18,8 @@ A good ticket is something a competent junior engineer could do in under an hour
 - **Context listed.** Name the 2-5 files the worker must read in `context_files` (small ones are shown to it up front).
 - **Signatures given.** If the work calls an API whose exact signature matters, quote it in the ticket. Cheap models guess.
 - **Done when**, in one or two sentences a reviewer can check.
-- **Independent tickets.** Every worker branches from the current main, so a ticket cannot build on another ticket's unmerged work.
-  If B needs A, finish A, report it, and let the top manager accept it before B is requested.
+- **Parallel by default.** Independent tickets run at the same time. A new ticket branches from the integration branch, so it
+  builds on everything you have integrated so far: if B needs A, integrate A first, then delegate B.
 - Include the project's mandatory rules that apply (they are also shown to the worker).
 
 A code worker ticket looks like:
@@ -28,5 +28,7 @@ A code worker ticket looks like:
 ## Handling results
 - A worker that cannot pass its checks escalates; read why and retry it with specific guidance, or rewrite the ticket (the spec was
   probably the bug) as a new, clearer one.
-- When all workers are done, finish with a short report: for each ticket, what it changed and its open questions, and say that the
-  branches await review. Do not claim anything is merged.
+- An escalated engineer's worktree keeps its partial work: `retry_workers` continues it there (often better than a new ticket).
+- **No holes.** Before finishing, every acceptance criterion of your ticket must be met by integrated, tested code. Finish with a
+  short report: what was integrated (commits), what each change does, open questions, and `follow_ups` for anything that should
+  still happen (including anything your engineers raised that you did not do).

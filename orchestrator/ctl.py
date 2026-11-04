@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from . import actions
-from .codework import CodeError, CodeRepo, code_repo_from_cfg
+from .codework import CodeError, CodeRepo, code_repo_from_cfg, rework_spec
 from .config import enter_project, load_config, model_chain
 from .hardware import hardware_brief
 from .limits import GuardedProvider, Halted
@@ -78,8 +78,16 @@ class Ctl:
             # needs_attention is only what the department managers could not handle (or what is the
             # human's call by policy). Worker problems are the managers' to fix and are listed separately.
             (handled_below if route == "manager" else attention).append(item)
+        follow_ups = [{"from": t["id"], "title": t["title"][:80], "item": str(f)[:300]}
+                      for t in self.store.list_tickets(status="done") if t["parent_id"] is None
+                      for f in ((t.get("result") or {}).get("follow_ups") or [])]
+        team: dict[str, dict[str, int]] = {}
+        for a in self.store.list_agents():
+            d = team.setdefault(a["department"] or "?", {"active": 0, "finished": 0})
+            d["finished" if a["state"] in ("done", "failed", "escalated") else "active"] += 1
         return {"tickets": rows, "needs_attention": attention,
                 "managers_handling": [{k: i[k] for k in ("id", "title", "status", "why")} for i in handled_below],
+                "follow_ups": follow_ups, "team": team,
                 "halted": self._halt_reason(), "run_active": self.run_active()}
 
     def ticket(self, ticket_id: str) -> dict[str, Any]:
@@ -276,8 +284,10 @@ class Ctl:
                 rows.append({"id": t["id"], "title": t["title"], "files": (res.get("code") or {}).get("files", []),
                              "gates_passed": bool(gates and gates[-1]["payload"]["ok"]),
                              "summary": str(res.get("summary", ""))[:300]})
-        return {"awaiting_review": rows,
-                "next": "ctl code show ID, then ctl code accept ID (merges) or ctl code reject ID \"feedback\"" if rows else "nothing to review"}
+        repo = code_repo_from_cfg(self.cfg)
+        return {"awaiting_review": rows, "integration": repo.integration_status() if repo else None,
+                "next": "ctl code show ID, then ctl code accept ID (into integration) or ctl code reject ID \"feedback\""
+                        if rows else "nothing awaiting review"}
 
     def _ready_ticket(self, ticket_id: str) -> dict[str, Any]:
         t = self.store.get_ticket(ticket_id)
@@ -297,9 +307,29 @@ class Ctl:
 
     def code_accept(self, ticket_id: str) -> dict[str, Any]:
         t, repo = self._ready_ticket(ticket_id), self._repo()
-        sha = repo.merge(ticket_id, f"Merge {ticket_id}: {t['title']}")
-        self.store.add_event(ticket_id, "top_manager", "code_accepted", {"merge_commit": sha})
-        return {"accepted": ticket_id, "merge_commit": sha, "branch": repo.base_branch}
+        code_cfg = self.cfg.get("code") or {}
+        out = repo.merge_to_integration(ticket_id, f"Merge {ticket_id}: {t['title']}",
+                                        list(code_cfg.get("integration_checks") or []), float(code_cfg.get("test_timeout", 600)))
+        self.store.add_event(ticket_id, "top_manager", "code_accepted",
+                             {"merge_commit": out["merge_commit"], "by": "top_manager", "into": repo.integration_branch})
+        return {"accepted": ticket_id, "merge_commit": out["merge_commit"], "into": repo.integration_branch,
+                "next": "ctl code integration shows what is waiting; ctl code release merges it into " + repo.base_branch}
+
+    def code_integration(self) -> dict[str, Any]:
+        """What the integration branch holds beyond the base branch (the managers' accepted work)."""
+        return self._repo().integration_status()
+
+    def code_release(self) -> dict[str, Any]:
+        """Merge the integration branch into the base branch (the repository must be on it, with no uncommitted
+        changes to tracked files)."""
+        repo = self._repo()
+        out = repo.release(f"Release integration ({repo.integration_status()['ahead']} commits) into {repo.base_branch}")
+        self.store.add_event(None, "top_manager", "code_released", out)
+        return out
+
+    def code_sync(self) -> dict[str, Any]:
+        """Bring commits made on the base branch into the integration branch."""
+        return {"merged_base_into_integration": self._repo().sync_integration()}
 
     def code_reject(self, ticket_id: str, feedback: str) -> dict[str, Any]:
         """Discard the branch and file a replacement ticket that carries the reviewer's feedback."""
@@ -309,9 +339,7 @@ class Ctl:
         root = t
         while root.get("parent_id"):
             root = self.store.get_ticket(root["parent_id"])
-        worker = {"title": t["title"], "worker_role": t.get("worker_role", "code_worker"), "rigor": t.get("rigor", "balanced"),
-                  "context": f"{t['context']}\n\n[Reviewer feedback on the previous attempt]: {feedback.strip()}",
-                  "acceptance_criteria": t["acceptance_criteria"], "return_spec": t["return_spec"], "code": t["code"]}
+        worker = rework_spec(t, feedback)
         new = self.store.create_ticket({
             "title": f"Redo: {t['title']}", "assignee": root["assignee"], "worker_role": "worker", "cc": ["top_manager"],
             "context": worker["context"], "acceptance_criteria": t["acceptance_criteria"], "return_spec": t["return_spec"],
@@ -344,6 +372,7 @@ class Ctl:
     def watch(self, timeout: float = 600, grace: float = 10, poll: float = 2.0) -> dict[str, Any]:
         """Block until something needs the human/top manager, then return immediately:
           attention       new escalation or question (reported once)
+          completed       a department finished a top-level ticket: read its result and follow-ups, assign next work
           pending_no_run  work is waiting but no run is active (start `run`)
           idle            nothing pending and no run active
           timeout         nothing happened within `timeout` seconds
@@ -358,6 +387,16 @@ class Ctl:
                 seen |= {f"{a['id']}:{a['status']}" for a in new}
                 atomic_write(self.workspace / "attention_seen.json", json.dumps(sorted(seen)))
                 return {"reason": "attention", "new_attention": new, "run_active": board["run_active"],
+                        "still_open": len(board["needs_attention"])}
+            finished = [t for t in self.store.list_tickets() if t["parent_id"] is None
+                        and t["status"] in ("done", "failed", "cancelled") and f"{t['id']}:{t['status']}" not in seen]
+            if finished:
+                seen |= {f"{t['id']}:{t['status']}" for t in finished}
+                atomic_write(self.workspace / "attention_seen.json", json.dumps(sorted(seen)))
+                return {"reason": "completed", "run_active": board["run_active"],
+                        "completed": [{"id": t["id"], "title": t["title"], "status": t["status"],
+                                       "assignee": t["assignee"], "result": t.get("result"),
+                                       "follow_ups": (t.get("result") or {}).get("follow_ups") or []} for t in finished],
                         "still_open": len(board["needs_attention"])}
             pending = any(t["status"] in ("open", "in_progress") for t in self.store.list_tickets())
             if board["run_active"]:
@@ -435,7 +474,7 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
         p.add_argument("id")
         p.add_argument("text", nargs="?", default="")
     cd = sub.add_parser("code", help="review the code branches workers produced")
-    cd.add_argument("action", choices=["list", "show", "accept", "reject", "discard"])
+    cd.add_argument("action", choices=["list", "show", "accept", "reject", "discard", "integration", "release", "sync"])
     cd.add_argument("id", nargs="?")
     cd.add_argument("text", nargs="?", default="", help="feedback for reject")
     cd.add_argument("--lines", type=int, default=300, help="diff lines to show")
@@ -484,11 +523,12 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
         elif a.cmd in ("answer", "retry", "cancel", "handoff"):
             out = getattr(ctl, a.cmd)(a.id, a.text)
         elif a.cmd == "code":
-            if a.action != "list" and not a.id:
+            if a.action not in ("list", "integration", "release", "sync") and not a.id:
                 raise StoreError(f"code {a.action} needs a ticket id")
             out = {"list": lambda: ctl.code_list(), "show": lambda: ctl.code_show(a.id, a.lines),
                    "accept": lambda: ctl.code_accept(a.id), "reject": lambda: ctl.code_reject(a.id, a.text),
-                   "discard": lambda: ctl.code_discard(a.id)}[a.action]()
+                   "discard": lambda: ctl.code_discard(a.id), "integration": lambda: ctl.code_integration(),
+                   "release": lambda: ctl.code_release(), "sync": lambda: ctl.code_sync()}[a.action]()
         elif a.cmd == "watch":
             out = ctl.watch(a.timeout, a.grace)
         elif a.cmd == "ticket":

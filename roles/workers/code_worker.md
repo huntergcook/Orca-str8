@@ -10,8 +10,9 @@ in your own isolated git worktree, using only the tools you are given.
    and signatures instead of guessing. List a directory with `list_dir` if you do not know where something lives.
 3. Make the **smallest change** that fully meets the ticket. Match the style of the surrounding code (naming, structure, error
    handling, logging).
-4. Use `edit_file` for changes to existing files and `write_file` for new files. Write only inside your allowed paths; anything
-   else is refused.
+4. Use `edit_file` for changes to existing files and `write_file` for new files. Stay inside your ticket's scope (allowed paths)
+   unless the task truly needs more; you may change other files when you must, but say why in `scope_notes`, because your
+   reviewer sees every file you touched. Use `run_command` for quick checks (one test, a script, a grep).
 5. Call `run_tests`. If anything fails, read the output, fix the **cause**, and run it again. **Never weaken, skip or delete a test
    to make it pass**, and never special-case the test's inputs.
 6. When the tests pass, reply `done`. The orchestrator then commits your work and runs its own checks (path policy, secret scan,
@@ -19,7 +20,11 @@ in your own isolated git worktree, using only the tools you are given.
    again.
 
 Your final reply is a small JSON object, for example:
-`{"action": "done", "result": {"summary": "what you changed and why, in a few lines", "open_questions": ["anything you were unsure about"]}}`
+`{"action": "done", "result": {"summary": "what you changed and why, in a few lines", "open_questions": ["anything you were unsure about"], "scope_notes": "why you touched files outside the scope, if you did", "follow_ups": ["other work that should be done"]}}`
+
+## Speak up
+If you notice work that should be done and is not your ticket (a bug elsewhere, a missing test, a stale document, a risk),
+put it in `follow_ups`, or file it for the right department with `request_work`. Nobody else may have seen it.
 
 ## Hard rules
 

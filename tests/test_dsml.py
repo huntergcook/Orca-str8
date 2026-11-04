@@ -111,6 +111,6 @@ def test_manager_hitting_the_worker_cap_gets_feedback_instead_of_crashing(store,
     t = m.work(top)
     assert t["status"] == "done" and t["result"] == {"final": "used what we had"}
     final_prompt = p.calls[-1]["messages"][0]["content"]
-    assert "# IMPORTANT" in final_prompt and "rejected" in final_prompt and "Do not delegate more" in final_prompt
+    assert "# IMPORTANT" in final_prompt and "rejected" in final_prompt and "yourself with your tools" in final_prompt
     assert "delegation rejected" in m.memory.read_journal()
     assert len(store.list_tickets(parent_id=top)) == 2

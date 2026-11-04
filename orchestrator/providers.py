@@ -33,6 +33,7 @@ class Completion:
     input_tokens: int = 0
     output_tokens: int = 0
     model: str = ""
+    cache_hit_tokens: int = 0       # input tokens served from the provider's prompt cache (cheaper)
 
 
 class Provider(Protocol):
@@ -88,6 +89,7 @@ class AnthropicProvider:
             input_tokens=msg.usage.input_tokens,
             output_tokens=msg.usage.output_tokens,
             model=model,
+            cache_hit_tokens=int(getattr(msg.usage, "cache_read_input_tokens", 0) or 0),
         )
 
 
@@ -151,6 +153,7 @@ class OpenAICompatProvider:
                 input_tokens=usage.get("prompt_tokens", 0),
                 output_tokens=usage.get("completion_tokens", 0),
                 model=model,
+                cache_hit_tokens=int(usage.get("prompt_cache_hit_tokens", 0) or 0),
             )
         raise RuntimeError(f"API unavailable after {self.retries} attempts ({last})")
 

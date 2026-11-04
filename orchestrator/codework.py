@@ -12,9 +12,11 @@ A passing branch is NOT merged: a human or the top manager reviews it (`ctl code
 """
 from __future__ import annotations
 
+import functools
 import os
 import re
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -28,7 +30,8 @@ SECRET_PATTERNS = [
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
     re.compile(r"(?i)(?:api|secret|access)[_-]?(?:key|token)\s*[:=]\s*['\"][^'\"\s]{16,}['\"]"),
 ]
-CODE_TOOLS = ("read_file", "list_dir", "write_file", "edit_file", "search_text", "run_tests")
+CODE_TOOLS = ("read_file", "list_dir", "write_file", "edit_file", "search_text", "run_tests", "run_command",
+              "request_work", "search_registry", "request_tool")
 
 
 class CodeError(Exception):
@@ -101,18 +104,48 @@ class CodeSpec:
         return out
 
 
-class CodeRepo:
-    """The git repository code tickets change, with one worktree and branch per ticket."""
+_REPO_LOCKS: dict[str, threading.RLock] = {}
+_REPO_LOCKS_GUARD = threading.Lock()
 
-    def __init__(self, repo: str | Path, base_branch: str | None = None, worktrees_dir: str | Path | None = None) -> None:
+
+def _locked(fn: Any) -> Any:
+    """Serialize operations that change shared git metadata (worktrees, branches, merges) per repository, so parallel
+    managers and workers never collide on git's lock files."""
+    @functools.wraps(fn)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return fn(self, *args, **kwargs)
+    return wrapper
+
+
+class CodeRepo:
+    """The git repository code tickets change.
+
+    Roles, like a small engineering team: every worker (engineer) gets its own worktree and branch ticket/<id>; the
+    Software manager (tech lead) merges reviewed branches into an INTEGRATION branch, in its own worktree, so the
+    user's checked-out branch is never touched mid-session; releasing the integration branch into the base branch
+    is a separate, deliberate step. New worker branches fork from the integration branch, so later tickets build on
+    earlier accepted work."""
+
+    def __init__(self, repo: str | Path, base_branch: str | None = None, worktrees_dir: str | Path | None = None,
+                 integration_branch: str | None = None) -> None:
         self.repo = Path(repo).resolve()
         _git(["rev-parse", "--git-dir"], self.repo)                     # raises CodeError if not a repository
         self.base_branch = base_branch or _git(["rev-parse", "--abbrev-ref", "HEAD"], self.repo).strip()
         self.worktrees_dir = Path(worktrees_dir).resolve() if worktrees_dir else self.repo.parent / f"{self.repo.name}-worktrees"
+        self.integration_branch = integration_branch or "orchestrator/integration"
+        with _REPO_LOCKS_GUARD:
+            self._lock = _REPO_LOCKS.setdefault(str(self.repo).lower(), threading.RLock())
 
-    # -------------------------------------------------------------- worktrees
+    # ------------------------------------------------------------ branches
+    def _branch_exists(self, name: str) -> bool:
+        return bool(_git(["branch", "--list", name], self.repo).strip())
+
     def worktree_path(self, ticket_id: str) -> Path:
         return self.worktrees_dir / ticket_id
+
+    def integration_path(self) -> Path:
+        return self.worktrees_dir / "_integration"
 
     def branch(self, ticket_id: str) -> str:
         return f"ticket/{ticket_id}"
@@ -120,18 +153,122 @@ class CodeRepo:
     def has_worktree(self, ticket_id: str) -> bool:
         return self.worktree_path(ticket_id).exists()
 
-    def ensure_worktree(self, ticket_id: str) -> Path:
-        """The ticket's worktree, created from the base branch's current commit if it does not exist yet."""
-        path = self.worktree_path(ticket_id)
+    # ---------------------------------------------------------- integration
+    @_locked
+    def ensure_integration(self) -> Path:
+        """The integration branch's own worktree, created from the base branch on first use."""
+        path = self.integration_path()
         if path.exists():
             return path
         self.worktrees_dir.mkdir(parents=True, exist_ok=True)
-        exists = bool(_git(["branch", "--list", self.branch(ticket_id)], self.repo).strip())
-        args = ["worktree", "add", str(path), self.branch(ticket_id)] if exists else \
-            ["worktree", "add", "-b", self.branch(ticket_id), str(path), self.base_branch]
-        _git(args, self.repo)
+        if self._branch_exists(self.integration_branch):
+            _git(["worktree", "add", str(path), self.integration_branch], self.repo)
+        else:
+            _git(["worktree", "add", "-b", self.integration_branch, str(path), self.base_branch], self.repo)
         return path
 
+    @_locked
+    def sync_integration(self) -> bool:
+        """Best effort: bring commits made on the base branch meanwhile into the integration branch. Never leaves a
+        half-done merge; returns True if it merged something."""
+        wt = self.ensure_integration()
+        if _git(["rev-list", "--count", f"{self.integration_branch}..{self.base_branch}"], self.repo).strip() == "0":
+            return False
+        if _git(["status", "--porcelain"], wt).strip():
+            return False
+        r = subprocess.run(["git", *GIT_ID, "merge", "--no-edit", self.base_branch], cwd=str(wt),
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            _git(["merge", "--abort"], wt, check=False)
+            return False
+        return True
+
+    def integration_status(self) -> dict[str, Any]:
+        if not self._branch_exists(self.integration_branch):
+            return {"exists": False, "branch": self.integration_branch, "base": self.base_branch, "ahead": 0, "commits": []}
+        span = f"{self.base_branch}..{self.integration_branch}"
+        commits = _git(["log", "--oneline", "--no-merges", span], self.repo).strip().splitlines()
+        return {"exists": True, "branch": self.integration_branch, "base": self.base_branch,
+                "ahead": int(_git(["rev-list", "--count", span], self.repo).strip() or 0), "commits": commits,
+                "diffstat": _git(["diff", "--stat", f"{self.base_branch}...{self.integration_branch}"], self.repo).strip()}
+
+    @_locked
+    def merge_to_integration(self, ticket_id: str, message: str, checks: list[str] | None = None,
+                             timeout: float = 600) -> dict[str, Any]:
+        """Merge a reviewed ticket branch into the integration branch (no fast-forward). Aborts cleanly on a conflict.
+        If `checks` fail on the merged result the merge is undone, so the integration branch stays green."""
+        wt = self.ensure_integration()
+        if _git(["status", "--porcelain"], wt).strip():
+            raise CodeError("the integration worktree has uncommitted changes; clean it first")
+        before = _git(["rev-parse", "HEAD"], wt).strip()
+        r = subprocess.run(["git", *GIT_ID, "merge", "--no-ff", "-m", message, self.branch(ticket_id)], cwd=str(wt),
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            _git(["merge", "--abort"], wt, check=False)
+            raise CodeError("merge conflict with the integration branch (aborted, nothing changed); the work must be "
+                            f"redone on top of the current integration branch: {(r.stdout + r.stderr).strip()[-250:]}")
+        results = run_commands(list(checks or []), wt, timeout)
+        failed = [x for x in results if not x["ok"]]
+        if failed:
+            _git(["reset", "--hard", before], wt)
+            raise CodeError("integration checks failed on the merged result, so the merge was undone: "
+                            + "; ".join(f"{x['name']} -> {x['detail'][:300]}" for x in failed))
+        sha = _git(["rev-parse", "--short", "HEAD"], wt).strip()
+        wtp = self.worktree_path(ticket_id)
+        if wtp.exists():                                              # the branch stays (reviewers can still read the patch)
+            _git(["worktree", "remove", "--force", str(wtp)], self.repo, check=False)
+        return {"merge_commit": sha, "checks": results}
+
+    @_locked
+    def release(self, message: str) -> dict[str, Any]:
+        """Merge the integration branch into the base branch, then clean up. Refuses unless the repository is on the
+        base branch with no uncommitted changes to tracked files; aborts cleanly on conflict."""
+        current = _git(["rev-parse", "--abbrev-ref", "HEAD"], self.repo).strip()
+        if current != self.base_branch:
+            raise CodeError(f"the repository is on '{current}', not '{self.base_branch}'; switch back before releasing")
+        if _git(["status", "--porcelain", "--untracked-files=no"], self.repo).strip():
+            raise CodeError("the repository has uncommitted changes to tracked files; commit or stash them first")
+        status = self.integration_status()
+        if not status["ahead"]:
+            raise CodeError("nothing to release: the integration branch has no commits beyond the base branch")
+        r = subprocess.run(["git", *GIT_ID, "merge", "--no-ff", "-m", message, self.integration_branch], cwd=str(self.repo),
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            _git(["merge", "--abort"], self.repo, check=False)
+            raise CodeError(f"merge conflict (aborted, nothing changed): {(r.stdout + r.stderr).strip()[-300:]}")
+        sha = _git(["rev-parse", "--short", "HEAD"], self.repo).strip()
+        # the release is done: drop the integration worktree and branch (the next ticket forks from the new base)
+        _git(["worktree", "remove", "--force", str(self.integration_path())], self.repo, check=False)
+        _git(["branch", "-D", self.integration_branch], self.repo, check=False)
+        for b in _git(["branch", "--merged", self.base_branch, "--format=%(refname:short)"], self.repo).split():
+            if b.startswith("ticket/"):
+                wtp = self.worktrees_dir / b.removeprefix("ticket/")
+                if wtp.exists():
+                    _git(["worktree", "remove", "--force", str(wtp)], self.repo, check=False)
+                _git(["branch", "-D", b], self.repo, check=False)
+        _git(["worktree", "prune"], self.repo, check=False)
+        return {"merge_commit": sha, "released": status["commits"], "into": self.base_branch}
+
+    # ------------------------------------------------------------ worktrees
+    @_locked
+    def ensure_worktree(self, ticket_id: str) -> Path:
+        """The ticket's worktree. A new branch forks from the integration branch (so it builds on accepted work); the
+        fork point is recorded so the ticket's own diff is exact later."""
+        path = self.worktree_path(ticket_id)
+        if path.exists():
+            return path
+        self.ensure_integration()
+        self.sync_integration()
+        branch = self.branch(ticket_id)
+        if self._branch_exists(branch):
+            _git(["worktree", "add", str(path), branch], self.repo)
+        else:
+            fork = _git(["rev-parse", self.integration_branch], self.repo).strip()
+            _git(["worktree", "add", "-b", branch, str(path), self.integration_branch], self.repo)
+            _git(["config", "--local", f"branch.{branch}.orchbase", fork], self.repo)
+        return path
+
+    @_locked
     def discard(self, ticket_id: str) -> None:
         path = self.worktree_path(ticket_id)
         if path.exists():
@@ -139,7 +276,8 @@ class CodeRepo:
         _git(["worktree", "prune"], self.repo, check=False)
         _git(["branch", "-D", self.branch(ticket_id)], self.repo, check=False)
 
-    # ---------------------------------------------------------------- changes
+    # -------------------------------------------------------------- changes
+    @_locked
     def commit_all(self, ticket_id: str, message: str) -> str | None:
         wt = self.worktree_path(ticket_id)
         _git(["add", "-A"], wt)
@@ -149,6 +287,11 @@ class CodeRepo:
         return _git(["rev-parse", "--short", "HEAD"], wt).strip()
 
     def _merge_base(self, ticket_id: str) -> str:
+        """Where this ticket's branch forked (recorded at creation; falls back to the merge base with the base branch)."""
+        r = subprocess.run(["git", "config", "--local", "--get", f"branch.{self.branch(ticket_id)}.orchbase"],
+                           cwd=str(self.repo), capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
         return _git(["merge-base", self.base_branch, self.branch(ticket_id)], self.repo).strip()
 
     def changed_files(self, ticket_id: str) -> list[tuple[str, str]]:
@@ -174,23 +317,20 @@ class CodeRepo:
         text = _git(["diff", "-U0", self._merge_base(ticket_id), self.branch(ticket_id)], self.repo)
         return [l[1:] for l in text.splitlines() if l.startswith("+") and not l.startswith("+++")]
 
-    # ------------------------------------------------------------------ merge
-    def merge(self, ticket_id: str, message: str) -> str:
-        """Merge the ticket's branch into the base branch (no fast-forward), then clean up. Refuses if the
-        repository is on another branch or has uncommitted tracked changes; aborts cleanly on conflict."""
-        current = _git(["rev-parse", "--abbrev-ref", "HEAD"], self.repo).strip()
-        if current != self.base_branch:
-            raise CodeError(f"the repository is on '{current}', not '{self.base_branch}'; switch back before accepting")
-        if _git(["status", "--porcelain", "--untracked-files=no"], self.repo).strip():
-            raise CodeError("the repository has uncommitted changes to tracked files; commit or stash them first")
-        r = subprocess.run(["git", *GIT_ID, "merge", "--no-ff", "-m", message, self.branch(ticket_id)], cwd=str(self.repo),
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if r.returncode != 0:
-            _git(["merge", "--abort"], self.repo, check=False)
-            raise CodeError(f"merge conflict (aborted, nothing changed): {(r.stdout + r.stderr).strip()[-300:]}")
-        sha = _git(["rev-parse", "--short", "HEAD"], self.repo).strip()
-        self.discard(ticket_id)
-        return sha
+
+def branch_state(store: Any, ticket_id: str) -> str | None:
+    """Where a code ticket's branch stands: 'ready' (awaiting review), 'accepted', 'rejected', 'discarded', or None."""
+    last = [e["type"] for e in store.events(ticket_id)
+            if e["type"] in ("code_ready", "code_accepted", "code_rejected", "code_discarded")]
+    return last[-1].removeprefix("code_") if last else None
+
+
+def rework_spec(ticket: dict[str, Any], feedback: str) -> dict[str, Any]:
+    """A fresh worker ticket that repeats `ticket` with the reviewer's feedback attached."""
+    return {"title": ticket["title"], "worker_role": ticket.get("worker_role", "code_worker"),
+            "rigor": ticket.get("rigor", "balanced"),
+            "context": f"{ticket['context']}\n\n[Reviewer feedback on the previous attempt]: {feedback.strip()}",
+            "acceptance_criteria": ticket["acceptance_criteria"], "return_spec": ticket["return_spec"], "code": ticket["code"]}
 
 
 def code_repo_from_cfg(cfg: dict[str, Any]) -> CodeRepo | None:
@@ -198,7 +338,7 @@ def code_repo_from_cfg(cfg: dict[str, Any]) -> CodeRepo | None:
     c = cfg.get("code") or {}
     repo = Path(c["repo"]) if c.get("repo") else Path.cwd()
     try:
-        return CodeRepo(repo, c.get("base_branch"), c.get("worktrees_dir"))
+        return CodeRepo(repo, c.get("base_branch"), c.get("worktrees_dir"), c.get("integration_branch"))
     except (CodeError, OSError):
         return None
 
@@ -228,8 +368,9 @@ def run_gates(repo: CodeRepo, ticket_id: str, spec: CodeSpec, code_cfg: dict[str
     if not changed:
         gates.append({"name": "path policy", "ok": False, "detail": "no files were changed"})
     else:
-        gates.append({"name": "path policy", "ok": not bad,
-                      "detail": (f"outside allowed_paths: {bad}" if bad else f"{len(changed)} file(s) changed, all allowed")})
+        gates.append({"name": "path policy", "ok": True, "warn": bool(bad),
+                      "detail": (f"REVIEW: changed outside allowed_paths: {bad}" if bad
+                                 else f"{len(changed)} file(s) changed, all inside allowed_paths")})
     gcfg = code_cfg.get("gates") or {}
     if gcfg.get("secret_scan", True):
         hits = [f"file {p}" for _, p in changed
@@ -258,9 +399,12 @@ class CodeToolBox(ToolBox):
     """What a code worker may do: read and search the worktree, edit files inside allowed_paths, run the
     ticket's acceptance commands. No hardware, no installs, no arbitrary execution."""
 
-    def __init__(self, workspace: str | Path, actor: str, *, root: Path, spec: CodeSpec, timeout: float = 600, **kw: Any) -> None:
+    def __init__(self, workspace: str | Path, actor: str, *, root: Path, spec: CodeSpec, timeout: float = 600,
+                 strict_scope: bool = False, **kw: Any) -> None:
         super().__init__(workspace, actor, **kw)
         self.root, self.spec, self.timeout = Path(root).resolve(), spec, timeout
+        self.strict_scope = strict_scope
+        self.out_of_scope: set[str] = set()
 
     def call(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         if tool not in CODE_TOOLS:
@@ -276,7 +420,10 @@ class CodeToolBox(ToolBox):
             "- write_file {path, content}: create or replace a file (new files, or small files).",
             "- edit_file {path, old, new}: replace ONE exact occurrence of `old` with `new` (prefer this for existing files).",
             "- run_tests {}: run this ticket's acceptance commands and see the output.",
-            f"You may write ONLY these paths: {', '.join(self.spec.allowed_paths)}.",
+            "- run_command {command, timeout?}: run any shell command in your worktree.",
+            "- request_work {department, title, need}: file work you found that is NOT part of this ticket (speak up).",
+            f"Your ticket's scope (allowed paths): {', '.join(self.spec.allowed_paths)}. Stay inside it unless the task truly "
+            "needs more; any file you change outside it is flagged to your reviewer, so explain why in result.scope_notes.",
             "Acceptance commands (they must all pass): " + "; ".join(self.spec.acceptance),
         ])
 
@@ -295,7 +442,9 @@ class CodeToolBox(ToolBox):
         if p.name.lower() not in SECRET_ALLOWED and SECRET_FILE_RE.search(p.name):
             raise ToolError(f"{p.name} looks like a secrets file and cannot be written")
         if not any(glob_match(rel, a) for a in self.spec.allowed_paths):
-            raise ToolError(f"{rel} is not in this ticket's allowed_paths: {self.spec.allowed_paths}")
+            if self.strict_scope:
+                raise ToolError(f"{rel} is not in this ticket's allowed_paths: {self.spec.allowed_paths}")
+            self.out_of_scope.add(rel)       # allowed (full authority), but the reviewer is told and must agree
         return p, rel
 
     # ---- reading
@@ -383,6 +532,10 @@ class CodeToolBox(ToolBox):
             raise ToolError(f"`old` matches {n} places; include more surrounding text so it matches exactly once")
         p.write_bytes(text.replace(old, new, 1).encode("utf-8"))
         return {"path": rel, "replaced": 1}
+
+    def _t_run_command(self, a: dict[str, Any]) -> dict[str, Any]:
+        """Any shell command in the worktree (build a quick check, run one test, inspect output)."""
+        return run_commands([str(a["command"])], self.root, min(self.timeout, float(a.get("timeout", self.timeout))))[0]
 
     def _t_run_tests(self, a: dict[str, Any]) -> dict[str, Any]:
         results = run_commands(self.spec.acceptance, self.root, self.timeout)

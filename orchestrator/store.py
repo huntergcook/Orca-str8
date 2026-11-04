@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -90,6 +91,23 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_ticket ON jobs(ticket_id);
 
+-- Live status of every manager (one row per manager per ticket) and worker, for the dashboard.
+CREATE TABLE IF NOT EXISTS agents (
+    agent_id   TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    kind       TEXT NOT NULL,              -- manager | worker | verifier
+    department TEXT,
+    ticket_id  TEXT,
+    state      TEXT NOT NULL,              -- e.g. thinking, tool, checking, waiting, reviewing, done, escalated
+    detail     TEXT NOT NULL DEFAULT '',
+    model      TEXT,
+    since      TEXT NOT NULL,              -- when the current state began
+    updated_at TEXT NOT NULL,
+    calls      INTEGER NOT NULL DEFAULT 0,
+    tokens_in  INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS resources (
     name              TEXT PRIMARY KEY,
     state             TEXT NOT NULL DEFAULT 'free',  -- free | reserved | busy
@@ -125,18 +143,40 @@ def _now() -> str:
 class Store:
     def __init__(self, path: str | Path = "orchestrator.db") -> None:
         self.path = str(path)
-        self._conn = sqlite3.connect(self.path, isolation_level=None, timeout=30)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=FULL")      # a committed change survives a power cut
-        self._conn.execute("PRAGMA foreign_keys=ON")
+        # One SQLite connection per thread (managers and workers run in parallel threads). WAL lets readers run
+        # alongside the single writer; BEGIN IMMEDIATE plus the busy timeout serializes writers safely.
+        self._local = threading.local()
+        self._all: list[sqlite3.Connection] = []
+        self._all_lock = threading.Lock()
         self._conn.executescript(DDL)
         if "pid_started" not in {r[1] for r in self._conn.execute("PRAGMA table_info(jobs)")}:
             self._conn.execute("ALTER TABLE jobs ADD COLUMN pid_started REAL")     # databases created before this column
         self._validator = jsonschema.Draft202012Validator(json.loads(SCHEMA_PATH.read_text()))
 
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            c = sqlite3.connect(self.path, isolation_level=None, timeout=60, check_same_thread=False)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA synchronous=FULL")      # a committed change survives a power cut
+            c.execute("PRAGMA foreign_keys=ON")
+            c.execute("PRAGMA busy_timeout=60000")
+            self._local.conn = c
+            with self._all_lock:
+                self._all.append(c)
+        return c
+
     def close(self) -> None:
-        self._conn.close()
+        with self._all_lock:
+            for c in self._all:
+                try:
+                    c.close()
+                except sqlite3.Error:
+                    pass
+            self._all.clear()
+        self._local = threading.local()
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
@@ -163,6 +203,92 @@ class Store:
                   payload: dict[str, Any] | None = None) -> None:
         with self._tx() as c:
             self._event(c, ticket_id, actor, type_, payload)
+
+    # ------------------------------------------------------------ agents and usage
+
+    def set_agent(self, agent_id: str, name: str, kind: str, department: str | None, ticket_id: str | None,
+                  state: str, detail: str = "", model: str | None = None) -> None:
+        """Record what an agent is doing right now. `since` only moves when the state changes."""
+        now = _now()
+        with self._tx() as c:
+            c.execute(
+                "INSERT INTO agents (agent_id, name, kind, department, ticket_id, state, detail, model, since, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET"
+                " name=excluded.name, kind=excluded.kind, department=excluded.department, ticket_id=excluded.ticket_id,"
+                " since=CASE WHEN agents.state = excluded.state THEN agents.since ELSE excluded.since END,"
+                " state=excluded.state, detail=excluded.detail, model=COALESCE(excluded.model, agents.model),"
+                " updated_at=excluded.updated_at",
+                (agent_id, name, kind, department, ticket_id, state, detail[:300], model, now, now))
+
+    def list_agents(self) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._conn.execute("SELECT * FROM agents ORDER BY department, kind, name")]
+
+    def record_usage(self, ticket_id: str | None, actor: str, department: str | None, completion: Any,
+                     agent_id: str | None = None) -> None:
+        """One model call: an append-only usage event (attributed to a department) plus the agent's running totals."""
+        tin, tout = int(getattr(completion, "input_tokens", 0) or 0), int(getattr(completion, "output_tokens", 0) or 0)
+        with self._tx() as c:
+            self._event(c, ticket_id, actor, "usage", {
+                "model": getattr(completion, "model", ""), "input_tokens": tin, "output_tokens": tout,
+                "cache_hit_tokens": int(getattr(completion, "cache_hit_tokens", 0) or 0), "department": department})
+            if agent_id:
+                c.execute("UPDATE agents SET calls = calls + 1, tokens_in = tokens_in + ?, tokens_out = tokens_out + ?"
+                          " WHERE agent_id = ?", (tin, tout, agent_id))
+
+    def usage_totals(self) -> dict[str, int]:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS calls, COALESCE(SUM(json_extract(payload, '$.input_tokens')), 0) AS tin,"
+            " COALESCE(SUM(json_extract(payload, '$.output_tokens')), 0) AS tout,"
+            " COALESCE(SUM(json_extract(payload, '$.cache_hit_tokens')), 0) AS hit FROM events WHERE type = 'usage'").fetchone()
+        return {"calls": row["calls"], "input_tokens": row["tin"], "output_tokens": row["tout"], "cache_hit_tokens": row["hit"]}
+
+    def usage_by_model(self) -> dict[str, dict[str, int]]:
+        out: dict[str, dict[str, int]] = {}
+        for r in self._conn.execute(
+                "SELECT json_extract(payload, '$.model') AS model, COUNT(*) AS calls,"
+                " COALESCE(SUM(json_extract(payload, '$.input_tokens')), 0) AS tin,"
+                " COALESCE(SUM(json_extract(payload, '$.output_tokens')), 0) AS tout,"
+                " COALESCE(SUM(json_extract(payload, '$.cache_hit_tokens')), 0) AS hit"
+                " FROM events WHERE type = 'usage' GROUP BY model"):
+            out[r["model"] or "?"] = {"calls": r["calls"], "input_tokens": r["tin"], "output_tokens": r["tout"],
+                                      "cache_hit_tokens": r["hit"]}
+        return out
+
+    def first_event_ts(self) -> str | None:
+        row = self._conn.execute("SELECT ts FROM events ORDER BY seq LIMIT 1").fetchone()
+        return row["ts"] if row else None
+
+    def usage_by_department(self) -> dict[str, dict[str, int]]:
+        """Token use per department. Older events without a department are attributed from their actor or ticket."""
+        roots: dict[str, str] = {}
+
+        def root_dept(ticket_id: str | None) -> str:
+            if not ticket_id:
+                return "unattributed"
+            if ticket_id not in roots:
+                t = self._conn.execute("SELECT data FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+                tk = json.loads(t["data"]) if t else None
+                while tk and tk.get("parent_id"):
+                    r = self._conn.execute("SELECT data FROM tickets WHERE id = ?", (tk["parent_id"],)).fetchone()
+                    tk = json.loads(r["data"]) if r else None
+                a = (tk or {}).get("assignee", "")
+                roots[ticket_id] = a.removesuffix("_manager") if a.endswith("_manager") else "unattributed"
+            return roots[ticket_id]
+
+        out: dict[str, dict[str, int]] = {}
+        for r in self._conn.execute("SELECT actor, ticket_id, payload FROM events WHERE type = 'usage'"):
+            p = json.loads(r["payload"])
+            d = p.get("department")
+            if not d:
+                a = r["actor"]
+                d = a.removesuffix("_manager") if a.endswith("_manager") else ("verification" if a == "verifier"
+                                                                                 else root_dept(r["ticket_id"]))
+            row = out.setdefault(d, {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_hit_tokens": 0})
+            row["calls"] += 1
+            row["input_tokens"] += int(p.get("input_tokens", 0) or 0)
+            row["output_tokens"] += int(p.get("output_tokens", 0) or 0)
+            row["cache_hit_tokens"] += int(p.get("cache_hit_tokens", 0) or 0)
+        return out
 
     def last_event_ts(self) -> str | None:
         row = self._conn.execute("SELECT ts FROM events ORDER BY seq DESC LIMIT 1").fetchone()

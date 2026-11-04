@@ -5,6 +5,7 @@ never from an accumulating chat transcript, so long sessions don't need compacti
 """
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,7 @@ class TopManager:
         verifier_models = list(vcfg.get("verifier_models") or []) or mgr_models
         verifier = Verifier(store, provider, cfg, workspace, verifier_models) if vcfg.get("enabled") else None
         self.managers: dict[str, Manager] = {}
+        departments = {dept: f"{dept}_manager" for dept in cfg["departments"]}
         for dept, spec in cfg["departments"].items():
             role_path = Path(spec.get("manager_role", ""))
             found = next((c for c in (Path.cwd() / role_path, ROLES_DIR.parent / role_path)
@@ -60,7 +62,8 @@ class TopManager:
                                           can_use_hardware=bool(spec.get("resource_leases", False)),
                                           jobs=self.jobs,
                                           verifier=None if is_verification else verifier,
-                                          diverse_workers=diverse)
+                                          diverse_workers=diverse, writes_code=spec.get("writes_code"),
+                                          departments=departments)
 
     # ------------------------------------------------------------------ context
 
@@ -92,8 +95,7 @@ class TopManager:
             model = self.models[min(attempt, len(self.models) - 1)]
             c = self.provider.complete(model=model, system=system,
                                        messages=[{"role": "user", "content": human_text}])
-            self.store.add_event(None, "top_manager", "usage", {
-                "model": c.model, "input_tokens": c.input_tokens, "output_tokens": c.output_tokens})
+            self.store.record_usage(None, "top_manager", "top", c)
             if c.refused:
                 say = (f"[The model declined this request ({c.refusal_category}). I will not route around "
                        "that automatically; please rephrase with more context or decide how to proceed.]")
@@ -140,22 +142,41 @@ class TopManager:
             self.finished = True
 
     def pump(self) -> None:
-        """Run department managers on their open top-level tickets. Repeats a few passes
-        because workers can file tickets to other departments (e.g. tool requests) mid-run."""
-        for _ in range(5):
-            ran = False
-            for m in self.managers.values():
-                for status in ("open", "in_progress"):
-                    for t in self.store.list_tickets(status=status, assignee=m.name):
-                        try:
-                            m.work(t["id"])
-                        except Halted:
-                            raise                      # pause / budget: stop the whole run cleanly
-                        except Exception as e:         # provider outage, bad key, bug: never fail silently
-                            self._work_failed(t["id"], m.name, e)
-                        ran = True
-            if not ran:
-                break
+        """Run every department's tickets in parallel, picking up new tickets as soon as they appear (rework, requests
+        between departments, tool requests), until nothing is runnable. A pause or exhausted budget stops it cleanly."""
+        limit = max(1, int(self.cfg["policies"].get("max_parallel_tickets", 8)))
+        running: dict[str, Future] = {}
+        halted: list[Halted] = []
+
+        def one(m: Manager, ticket_id: str) -> None:
+            try:
+                m.work(ticket_id)
+            except Halted as h:
+                halted.append(h)               # pause / budget: stop the whole run cleanly
+            except Exception as e:             # provider outage, bad key, bug: never fail silently
+                self._work_failed(ticket_id, m.name, e)
+
+        with ThreadPoolExecutor(max_workers=limit, thread_name_prefix="ticket") as pool:
+            while True:
+                if not halted:
+                    for m in self.managers.values():
+                        for status in ("open", "in_progress"):
+                            for t in self.store.list_tickets(status=status, assignee=m.name):
+                                if t["id"] not in running and t["parent_id"] is None:
+                                    running[t["id"]] = pool.submit(one, m, t["id"])
+                if not running:
+                    break
+                wait(list(running.values()), return_when=FIRST_COMPLETED, timeout=5)
+                for tid in [k for k, f in running.items() if f.done()]:
+                    running.pop(tid)
+                    # a ticket that is somehow still in progress after its manager returned would be resubmitted
+                    # forever; escalate it instead
+                    t = self.store.get_ticket(tid)
+                    if t["status"] == "in_progress" and not halted:
+                        self.store.escalate(tid, t["assignee"], "its manager stopped without an outcome", kind="technical",
+                                            to="top_manager")
+        if halted:
+            raise halted[0]
 
     def _work_failed(self, ticket_id: str, actor: str, err: Exception) -> None:
         """A manager crashed mid-ticket. Escalate it and its unfinished workers so the failure is

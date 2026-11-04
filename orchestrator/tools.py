@@ -17,6 +17,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import sys
 import urllib.parse
 import urllib.request
@@ -39,6 +40,9 @@ class ToolError(Exception):
     pass
 
 
+_REGISTRY_LOCK = threading.Lock()      # parallel workers may register tools at the same moment
+
+
 class ToolRegistry:
     def __init__(self, workspace: str | Path) -> None:
         self.root = Path(workspace) / "tools"
@@ -59,9 +63,10 @@ class ToolRegistry:
             raise ToolError("invalid tool name")
         entry = {"tags": [], "usage": "", "source_url": None, "license": None, "path": None,
                  "added_by": "unknown", **entry}
-        tools = [t for t in self.list() if t["name"] != entry["name"]]
-        tools.append(entry)
-        atomic_write(self.path, json.dumps(sorted(tools, key=lambda t: t["name"]), indent=2))
+        with _REGISTRY_LOCK:
+            tools = [t for t in self.list() if t["name"] != entry["name"]]
+            tools.append(entry)
+            atomic_write(self.path, json.dumps(sorted(tools, key=lambda t: t["name"]), indent=2))
         return entry
 
     def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -108,8 +113,9 @@ class ToolBox:
                  ticket_id: str | None = None, can_use_hardware: bool = False,
                  jobs: JobRunner | None = None,
                  run_cmd: Callable[..., tuple[int, str, str]] = _default_run,
-                 read_roots: list[str] | None = None) -> None:
+                 read_roots: list[str] | None = None, departments: dict[str, str] | None = None) -> None:
         self.workspace = Path(workspace)
+        self.departments = dict(departments or {})      # department name -> its manager, for request_work
         self.read_roots = [Path(r).expanduser().resolve() for r in (read_roots or [])]
         self.registry = ToolRegistry(workspace)
         self.actor, self.can_acquire, self.store = actor, can_acquire, store
@@ -122,6 +128,10 @@ class ToolBox:
         lines = ["Tools (reply {\"action\": \"tool\", \"tool\": \"<name>\", \"args\": {...}}; the result comes back to you):",
                  "- search_registry {query}: find existing tools. ALWAYS try this before building or requesting anything.",
                  "- request_tool {title, need, acceptance_criteria?}: ask the Tooling department for a tool."]
+        if self.departments:
+            lines.append("- request_work {department, title, need, deliver?}: file work for another department ("
+                         + ", ".join(sorted(self.departments)) + "). It runs in parallel and the top manager sees it. Use it "
+                         "when you find work that should be done and is not part of your ticket: speak up.")
         lines += ["- read_file {path} / write_file {path, content}: files inside the workspace (relative paths).",
                   "- run_python {script, args?, timeout?}: run a workspace Python script now (tool venv if present) and get its output.",
                   "- list_dir {path}: list a directory (workspace-relative, or absolute under a read root)."]
@@ -163,6 +173,21 @@ class ToolBox:
 
     def _t_search_registry(self, a: dict[str, Any]) -> dict[str, Any]:
         return {"results": self.registry.search(str(a.get("query", "")))}
+
+    def _t_request_work(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.store is None:
+            raise ToolError("ticketing unavailable")
+        dept = str(a.get("department", "")).strip()
+        if dept not in self.departments:
+            raise ToolError(f"unknown department {dept!r}; choose from {sorted(self.departments)}")
+        t = self.store.create_ticket({
+            "title": str(a["title"])[:200], "assignee": self.departments[dept], "worker_role": "worker", "cc": ["top_manager"],
+            "context": f"Requested by {self.actor} (while working on ticket {self.ticket_id}): {a['need']}",
+            "acceptance_criteria": a.get("acceptance_criteria") or ["the requester's need is met"],
+            "return_spec": {"format": "summary", "description": str(a.get("deliver") or "what was done and where to find it")},
+            "rigor": a.get("rigor", "balanced")}, actor=self.actor)
+        return {"ticket_id": t["id"], "department": dept,
+                "note": "it runs in parallel and is not part of your ticket: carry on with your own work"}
 
     def _t_request_tool(self, a: dict[str, Any]) -> dict[str, Any]:
         if self.store is None:

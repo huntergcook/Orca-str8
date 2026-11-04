@@ -16,7 +16,7 @@ It works with whatever AI access you have: API keys, or just a CLI subscription,
 - **What is it not for?** One-off questions or quick edits (just use your agent directly), and anything that needs a
   real security sandbox (see [Safety](#safety-and-limits)).
 
-> **Status: early.** Built and tested with 166 automated tests against mock models, plus live runs: a full research
+> **Status: early.** Built and tested with 229 automated tests against mock models, plus live runs: a full research
 > task on DeepSeek models, and real calls through the Claude CLI. Not yet exercised live: Codex, the Tooling
 > department's code sourcing, real hardware, game development. See [What has been verified](#what-has-been-verified).
 
@@ -111,12 +111,14 @@ understanding from notes and the ticket tree each time, so they survive restarts
 | **Research** | Theory, surveys, papers; decides technical direction from results |
 | **Tooling** | Builds and finds reusable tools. Checks its registry first, then searches open source (GitHub, PyPI), and only then builds. The only department allowed to acquire external code |
 | **Experiment** | Runs experiments: claims hardware, runs long sweeps as background jobs, watches them and fixes failures. Off by default; enable it for hardware work |
-| **Software** | Changes code. Each worker edits **its own git worktree** and branch, can only write the paths its ticket allows, and runs the ticket's acceptance commands; the orchestrator then runs gates (path policy, secret scan, acceptance) and sends failures back to the same worker. A passing branch **waits for review** (`ctl code show / accept / reject`); nothing merges on its own |
+| **Software** | Changes code. Its **manager owns the repository** like a tech lead: engineers each edit their own git worktree and branch; after automatic gates the manager reviews each branch (summary, open questions, diff), fixes small things itself, and **integrates** good work into an integration branch or sends it back with feedback. Your main branch only changes when the top manager (or you) **releases** the integration branch (`ctl code release`) |
 | **Verification** | Independent, strict, *advisory* checks of results against the real goal, on different models for diversity. It also reads each patch (the diff) and the project rules |
 
 You can add departments (see [Customize](#customize-it)).
 
 **Changing code (the Software department).** Code tickets carry a `code` spec: `allowed_paths` (narrow globs), `acceptance` (shell commands that must pass) and `context_files`. The worker gets a small tool set (list, read, search, `edit_file`, `write_file`, `run_tests`), nothing that can reach outside its worktree. When it says done, the orchestrator commits and runs the gates; if one fails the failure goes back into the *same* conversation. A passing branch is never merged automatically: the top manager (or you) reviews a packet (summary, open questions, gates, diff) and accepts or rejects it. The top manager can write exact worker tickets itself (`worker_tickets`), so ticket quality stays with the strongest model while cheap models write the code. Configure with `code:` in the config (`repo`, `base_branch`, `worktrees_dir`, `test_timeout`, `gates`). Workers cannot build C++ or run games, so acceptance should be Python-side tests; real builds stay yours.
+
+**A team that works in parallel.** Every department's tickets run at the same time, and inside a department every runnable worker runs at once (capped by `max_parallel_workers`, with `max_concurrent_calls` protecting the provider's rate limits). Managers react as results arrive: they answer questions and review finished branches while slower workers are still going, so nobody waits on the slowest. Managers have their own tools and full authority to fix what a worker could not. Any agent can file work for another department (`request_work`), and workers report work they noticed in `follow_ups`; managers pass the rest up so the top manager can keep a project-wide list with no holes.
 
 **Workers.** One ticket each, small context, then gone. They can read and write files inside the workspace, run Python,
 search the tool registry, and file tool requests; Tooling workers can also fetch code, and Experiment workers can claim
@@ -148,8 +150,9 @@ workers restart knowing they were interrupted so they check their saved files be
 **Models.** Each role can run on a different backend (below). Stronger models usually belong higher up. If a worker's
 reply fails, it falls through your fallback chain; each manager retry moves further along it.
 
-**Dashboard.** Needs-human (with Answer / Retry / Cancel buttons), a "being handled below you" list, the org tree with
-numbered workers, hardware and jobs, token spend, tickets and an event feed. A **Resume run** button appears if unfinished
+**Dashboard.** Needs-human (with Answer / Retry / Cancel buttons), a "being handled below you" list, a **Team** panel with every
+manager and worker, its live state (thinking, using a tool, checking, waiting, reviewing, done) and token use, grouped by department,
+token use **by department** (including prompt-cache hits), the integration branch, hardware and jobs, token spend, tickets and an event feed. A **Resume run** button appears if unfinished
 work has no run (after a restart). Read-only except those actions, which are guarded by a per-start token and
 localhost-only.
 
@@ -202,7 +205,8 @@ Run these from your project folder (or add `--project PATH`). Your agent runs mo
 | `ctl state --set` / `ctl log "..."` / `ctl human "..."` | Durable notes: plan, journal, and everything you said |
 | `ctl recover` / `ctl release-resource NAME "..."` | Recover after a crash; free hardware after you checked it |
 | `ctl add-resource NAME "when safe to stop"` / `ctl safe-to-stop NAME "..."` | Declare hardware for the Experiment department |
-| `ctl code list` / `show ID` / `accept ID` / `reject ID "feedback"` / `discard ID` | Review the branches the Software department produced: see the packet and diff, merge it, or send it back |
+| `ctl code integration` / `release` / `sync` | See what the Software manager integrated, release it into your main branch, or bring main's new commits into integration |
+| `ctl code list` / `show ID` / `accept ID` / `reject ID "feedback"` / `discard ID` | Review branches yourself (when `code.review: top_manager`, or to override) |
 | `ctl models ...` | See and choose models (above) |
 | `ctl pause` / `ctl unpause` | Halt or resume all model calls (also: create a file `workspace/PAUSE`) |
 | `ctl finish "summary"` | Mark the project done |
@@ -221,8 +225,10 @@ Run these from your project folder (or add `--project PATH`). Your agent runs mo
 | `models` / `providers` | Which backend runs each role (prefer `ctl models`); `fallback_chain` for retries |
 | `departments` | Which departments exist: `manager_role`, `mission`, `can_acquire_tools`, `resource_leases` (hardware), `diverse_models` |
 | `verification` | `enabled`, `verifier_models`, `max_rounds` |
-| `budget` | `max_tokens`, `max_minutes` are enforced; `max_cost_usd` is **not yet** |
-| `policies` | `capability_retry_limit`, `max_worker_retries`, `max_children_per_agent`, `default_rigor` |
+| `budget` | `max_tokens`, `max_minutes` and (with `prices`) `max_cost_usd` are enforced |
+| `policies` | `max_parallel_tickets`, `max_parallel_workers`, `max_concurrent_calls`, `max_tool_steps`, `max_manager_tool_steps`, `max_manager_rounds`, `capability_retry_limit`, `max_worker_retries`, `max_children_per_agent`, `default_rigor` |
+| `code` | `review` (`manager` or `top_manager`), `integration_branch`, `integration_checks` (run after every merge; a breaking merge is undone), `test_timeout`, `gates` |
+| `prices` | Optional `{model: {input, output, cache_hit}}` in $ per million tokens; enables cost estimates and `budget.max_cost_usd` |
 | `read_roots` | Folders agents may **read** (never write), by absolute path, e.g. your existing code repo. `.env`, keys and credential files are always blocked. Output still goes to `workspace/` |
 | `rules_file` | A file of mandatory project rules (legal, safety, house rules) injected into **every** manager, worker and verifier prompt; verification fails work that breaks them |
 
@@ -247,8 +253,8 @@ Read this before pointing it at anything that matters.
   not. For anything risky, use a dedicated machine or VM, and keep hardware behind hardware-level safety limits.
 - **Your data goes to the model providers you configure.** Tickets, context and file contents are sent to them. Keep
   sensitive work on a provider you trust, or on a local model.
-- **Cost controls are partial.** Token and time budgets are enforced and `PAUSE` halts everything immediately, but dollar
-  caps are not implemented. CLI backends report no real usage numbers. Verification multiplies model calls.
+- **Cost controls.** Token, time and (with a `prices` table) dollar budgets are enforced, and `PAUSE` halts everything immediately.
+  CLI backends report no real usage numbers. Parallel work spends faster; verification multiplies model calls.
 - **One run at a time per project** (enforced with a lock).
 - **Workers cannot spawn sub-workers yet** (`max_subworker_depth` is declared but unused).
 - **It is only as good as your agents.** The top manager follows written instructions; weaker agents may follow them less
@@ -258,7 +264,7 @@ Read this before pointing it at anything that matters.
 
 ## What has been verified
 
-- **166 automated tests**, all with mock or scripted providers plus real local subprocesses (jobs, a fake CLI backend, a
+- **229 automated tests**, all with mock or scripted providers plus real local subprocesses (jobs, a fake CLI backend, a
   simulated power loss, concurrency guards, the dashboard's security checks).
 - **Live:** a complete research task ran end to end on DeepSeek models: the research department, workers using the file,
   Python and tool-registry tools, the verification gate, and worker escalations. The Claude CLI backend also answered a

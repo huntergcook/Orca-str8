@@ -77,6 +77,7 @@ def test_fanout_cap_respected(store, tmp_path):
     m, p = mk_manager(store, tmp_path, [j(action="delegate", tickets=[SPEC] * 6)]
                       + [j(action="done", result={"w": 1})] * 5
                       + [j(action="done", result={"final": "five were enough"})])
+    m.cfg["policies"]["max_children_per_agent"] = 5
     top = top_ticket(store)
     t = m.work(top)
     assert t["status"] == "done"

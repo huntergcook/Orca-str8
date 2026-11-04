@@ -85,7 +85,7 @@ def test_run_continues_the_interrupted_work_and_the_worker_knows(tmp_path):
     out = ctl.run()
     assert next(t for t in out["tickets"] if t["id"] == top)["status"] == "done"
     prompt = ctl.provider.inner.calls[0]["messages"][0]["content"]
-    assert "interrupted (crash or power loss)" in prompt and f"work/{kid}/" in prompt   # told to check saved files
+    assert "interrupted (crash, power loss or step limit)" in prompt and f"work/{kid}/" in prompt   # told to check saved files
     started = [e for e in ctl.store.events(kid) if e["type"] == "worker_started"]
     assert [e["payload"]["resumed_after_interruption"] for e in started] == [False, True]
     ctl.close()
