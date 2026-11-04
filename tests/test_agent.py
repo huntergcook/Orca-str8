@@ -99,3 +99,21 @@ def test_config_defaults_and_chain(tmp_path):
     cfg = load_config(f)
     assert model_chain(cfg, "worker") == ["w", "old"]
     assert cfg["models"]["top"]["model"]            # defaults preserved by merge
+
+
+def test_guarded_provider_pause_and_budget(store, tmp_path):
+    from orchestrator.limits import GuardedProvider, Halted
+    cfg = load_config(None)
+    cfg["budget"]["max_tokens"] = 10
+    inner = MockProvider(['{"action":"done"}'] * 3)
+    g = GuardedProvider(inner, store, cfg, tmp_path)
+    g.complete(model="m", system="s", messages=[])                  # fine: nothing used yet
+    store.add_event(None, "x", "usage", {"input_tokens": 8, "output_tokens": 5})
+    with pytest.raises(Halted, match="token budget"):
+        g.complete(model="m", system="s", messages=[])
+    cfg["budget"]["max_tokens"] = None
+    g.complete(model="m", system="s", messages=[])                  # unlimited again
+    (tmp_path / "PAUSE").write_text("")
+    with pytest.raises(Halted, match="paused"):
+        g.complete(model="m", system="s", messages=[])
+    assert len(inner.calls) == 2

@@ -12,14 +12,14 @@ providers:
 
 models:
   # Logical tiers -> concrete models. Higher in the hierarchy uses higher tiers.
-  top:     { provider: anthropic, model: REPLACE_ME }
-  manager: { provider: anthropic, model: REPLACE_ME }
-  worker:  { provider: anthropic, model: REPLACE_ME }
-  fallback_chain: []   # capability-stuck fallbacks, tried in order
+  top:     { provider: anthropic, model: claude-opus-5-5 }
+  manager: { provider: anthropic, model: claude-opus-5-5 }
+  worker:  { provider: anthropic, model: claude-sonnet-5-5 }   # cheaper tier; change if you prefer
+  fallback_chain: []   # capability-stuck fallbacks, tried in order. Never used to route around safety refusals.
 
 budget:
   # Default: no limits. Set any of these to enable.
-  max_cost_usd: null
+  max_cost_usd: null      # not enforced yet
   max_tokens: null
   max_minutes: null
 

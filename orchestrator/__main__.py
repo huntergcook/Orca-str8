@@ -5,6 +5,7 @@ import argparse
 from pathlib import Path
 
 from .config import load_config
+from .limits import GuardedProvider, Halted
 from .providers import AnthropicProvider
 from .store import Store
 from .top import TopManager
@@ -20,9 +21,11 @@ def main() -> None:
     workspace = Path(cfg["workspace"])
     workspace.mkdir(parents=True, exist_ok=True)
     store = Store(args.db or workspace / "orchestrator.db")
-    top = TopManager(store, AnthropicProvider(), cfg, workspace)
+    provider = GuardedProvider(AnthropicProvider(), store, cfg, workspace)
+    top = TopManager(store, provider, cfg, workspace)
 
     print("Orchestrator top manager. Ctrl+C or /quit to exit; /board shows tickets.")
+    print(f"Create {workspace / 'PAUSE'} to halt all model calls.")
     try:
         while not top.finished:
             try:
