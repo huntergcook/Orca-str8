@@ -73,9 +73,15 @@ def test_manager_asks_upward_when_it_cannot_answer(store, tmp_path):
 
 
 def test_fanout_cap_respected(store, tmp_path):
-    m, _ = mk_manager(store, tmp_path, [j(action="delegate", tickets=[SPEC] * 6)])
-    with pytest.raises(Exception, match="children"):
-        m.work(top_ticket(store))
+    # asking for 6 workers with a cap of 5 creates 5; the manager is told, not crashed
+    m, p = mk_manager(store, tmp_path, [j(action="delegate", tickets=[SPEC] * 6)]
+                      + [j(action="done", result={"w": 1})] * 5
+                      + [j(action="done", result={"final": "five were enough"})])
+    top = top_ticket(store)
+    t = m.work(top)
+    assert t["status"] == "done"
+    assert len(store.list_tickets(parent_id=top)) == 5                    # the cap held
+    assert "already has 5 children" in p.calls[-1]["messages"][0]["content"]   # and the manager was told why
 
 
 def test_garbage_escalates(store, tmp_path):

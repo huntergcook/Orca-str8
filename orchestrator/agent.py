@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .dsml import has_dsml, parse_dsml
 from .providers import Completion, Provider
 from .store import Store
 
@@ -22,6 +23,8 @@ Work only on the ticket below; stay inside its scope. Reply with exactly one JSO
       ("safety": anything physically or otherwise unsafe; goes straight to the human. "blocked": you cannot
        finish and need your manager's help, which is the normal case.)
   {"action": "fail", "reason": "<why it cannot be done>"}
+Reply with plain JSON text only: never use XML-style or special-token tool-call markup (anything like
+<|...|> or DSML tags). Tool calls are JSON objects too.
 Keep the JSON reply SMALL. Put long content (reports, notes, data, code) in a file with write_file and
 return only a short summary and the file path in "result". Never put a long document inside the JSON.
 Match your effort to the ticket's rigor level."""
@@ -37,8 +40,9 @@ def as_result(value: Any) -> dict[str, Any]:
     return {"text": value} if isinstance(value, str) else {"value": value}
 
 
-def parse_reply(text: str, key: str = "action") -> dict[str, Any] | None:
-    """Extract the first balanced JSON object that has `key` (default 'action')."""
+def parse_reply(text: str, key: str = "action", allow_dsml: bool = False) -> dict[str, Any] | None:
+    """Extract the first balanced JSON object that has `key` (default 'action'). With allow_dsml, a DeepSeek
+    native tool call (see dsml.py) is accepted as a fallback and returned as an ordinary tool action."""
     start = text.find("{")
     while start != -1:
         depth, in_str, esc = 0, False, False
@@ -67,6 +71,8 @@ def parse_reply(text: str, key: str = "action") -> dict[str, Any] | None:
                         pass
                     break
         start = text.find("{", start + 1)
+    if allow_dsml and key == "action" and has_dsml(text):
+        return parse_dsml(text)
     return None
 
 
@@ -157,7 +163,9 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
             messages = messages[:1] + [{"role": "user", "content": _restated(t)}]
             continue
 
-        reply = parse_reply(c.text)
+        reply = parse_reply(c.text, allow_dsml=True)
+        if reply is not None and "DSML" in c.text and not c.text.lstrip().startswith("{"):
+            store.add_event(ticket_id, actor, "reply_normalized", {"from": "dsml", "tool": reply.get("tool")})
         if reply is None:
             invalid += 1
             # Keep a sample of the bad reply so failures can be diagnosed afterwards.

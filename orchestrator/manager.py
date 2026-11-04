@@ -36,6 +36,7 @@ Reply with exactly one JSON object:
   {"action": "escalate", "kind": "safety" | "blocked", "reason": "..."}
   {"action": "fail", "reason": "..."}
 Keep each worker ticket narrow. Match effort to the ticket's rigor.
+Reply with plain JSON text only: never use XML-style or special-token tool-call markup (anything like <|...|> or DSML tags).
 
 YOU OWN WORKER PROBLEMS. When a worker ticket is [escalated] or [failed], read its reason and the sample of its
 last bad reply, then fix it yourself: retry_workers with specific guidance (a retry automatically uses the next
@@ -72,6 +73,7 @@ class Manager:
         self.memory = Memory(workspace, name)
         self.role_text = role_text
         self.manager_models, self.worker_models = manager_models, worker_models
+        self._notice: dict[str, str] = {}      # feedback for the manager's next decision, per ticket
 
     # ----------------------------------------------------------------- helpers
 
@@ -261,7 +263,8 @@ class Manager:
                 d = self._decide(f"# Your ticket\n{ticket_prompt(t)}\n\nPlan the work.")
             else:
                 d = self._decide(f"# Your ticket\n{ticket_prompt(t)}\n\n# Worker results\n"
-                                 f"{self._children_summary(ticket_id)}\n\nReview, then finish or delegate follow-ups.")
+                                 f"{self._children_summary(ticket_id)}\n\nReview, then finish or delegate follow-ups."
+                                 + (f"\n\n# IMPORTANT\n{self._notice.pop(ticket_id)}" if ticket_id in self._notice else ""))
             if d is None:
                 self.store.escalate(ticket_id, self.name, "no valid decision from the manager model", kind="technical")
                 break
@@ -278,7 +281,14 @@ class Manager:
             if d.get("action") == "done":
                 d = self._verify_gate(ticket_id, d)
             if d.get("action") == "delegate":
-                self._delegate(ticket_id, d)
+                try:
+                    self._delegate(ticket_id, d)
+                except StoreError as e:      # e.g. the per-manager worker cap: tell the manager instead of crashing
+                    self._notice[ticket_id] = (f"Your last delegation was rejected: {e}. Do not delegate more workers. "
+                                               "Finish with the results you already have, or retry_workers on an "
+                                               "escalated one.")
+                    self.memory.append_journal(f"[{ticket_id}] delegation rejected: {e}")
+                    continue
                 if d.get("notes"):
                     self.memory.append_journal(f"[{ticket_id}] {d['notes']}")
                 continue
