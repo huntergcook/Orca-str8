@@ -46,6 +46,10 @@ class Ctl:
         self.top = TopManager(self.store, self.provider, cfg, self.workspace)
 
     def close(self) -> None:
+        for m in getattr(self.top, "managers", {}).values():     # let worker threads finish before the store closes
+            pool = getattr(m, "pool", None)
+            if pool is not None:
+                pool.shutdown(wait=True, cancel_futures=True)
         self.store.close()
 
     # ------------------------------------------------------------------ reading

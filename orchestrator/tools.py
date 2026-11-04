@@ -113,7 +113,9 @@ class ToolBox:
                  ticket_id: str | None = None, can_use_hardware: bool = False,
                  jobs: JobRunner | None = None,
                  run_cmd: Callable[..., tuple[int, str, str]] = _default_run,
-                 read_roots: list[str] | None = None, departments: dict[str, str] | None = None) -> None:
+                 read_roots: list[str] | None = None, departments: dict[str, str] | None = None,
+                 approve_requests: bool = False) -> None:
+        self.approve_requests = approve_requests     # cross-department requests wait for the top manager
         self.workspace = Path(workspace)
         self.departments = dict(departments or {})      # department name -> its manager, for request_work
         self.read_roots = [Path(r).expanduser().resolve() for r in (read_roots or [])]
@@ -189,6 +191,11 @@ class ToolBox:
             "acceptance_criteria": a.get("acceptance_criteria") or ["the requester's need is met"],
             "return_spec": {"format": "summary", "description": str(a.get("deliver") or "what was done and where to find it")},
             "rigor": a.get("rigor", "balanced")}, actor=self.actor)
+        if self.approve_requests:
+            self.store.escalate(t["id"], self.actor, f"proposed by {self.actor} for the {dept} department: approve with "
+                                "retry, or decline with cancel", kind="proposal", to="top_manager")
+            return {"ticket_id": t["id"], "department": dept,
+                    "note": "proposed: it starts when the top manager approves it; carry on with your own work"}
         return {"ticket_id": t["id"], "department": dept,
                 "note": "it runs in parallel and is not part of your ticket: carry on with your own work"}
 

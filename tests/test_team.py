@@ -322,8 +322,9 @@ def test_cancelling_a_running_ticket_stops_its_manager_and_workers(store, tmp_pa
     th.join(10)
     assert not th.is_alive() and out["t"]["status"] == "cancelled"
     assert all(c["status"] == "cancelled" for c in store.list_tickets(parent_id=tid))
+    time.sleep(0.3)                                  # a call already past its cancel check may still finish
     n = len(p.calls)
-    time.sleep(0.3)
+    time.sleep(0.5)
     assert len(p.calls) == n                                                    # nobody keeps calling the model
 
 
@@ -397,3 +398,15 @@ def test_models_chosen_on_a_ticket_apply_to_its_manager_and_all_workers_below(tm
     assert by_ticket["hard"] == {"strong"} and by_ticket["easy"] == {"cheap"}
     assert ctl.set_models(hard, worker="default")["models"] == {"manager": "strong"}
     ctl.close()
+
+
+def test_cross_department_requests_can_wait_for_the_top_managers_approval(store, tmp_path):
+    from orchestrator import actions
+    asker = top(store)
+    box = ToolBox(tmp_path, "research_manager", store=store, ticket_id=asker,
+                  departments={"software": "software_manager"}, approve_requests=True)
+    r = box.call("request_work", {"department": "software", "title": "build X", "need": "X is missing"})
+    assert r["ok"] and "proposed" in r["note"]
+    t = store.get_ticket(r["ticket_id"])
+    assert t["status"] == "escalated" and t["escalation"]["to"] == "top_manager" and t["escalation"]["kind"] == "proposal"
+    assert actions.retry(store, t["id"], "approved", "top_manager")["status"] == "in_progress"     # approve

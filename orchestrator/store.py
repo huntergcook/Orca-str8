@@ -146,7 +146,7 @@ class Store:
         # One SQLite connection per thread (managers and workers run in parallel threads). WAL lets readers run
         # alongside the single writer; BEGIN IMMEDIATE plus the busy timeout serializes writers safely.
         self._local = threading.local()
-        self._all: list[sqlite3.Connection] = []
+        self._all: list[tuple[threading.Thread, sqlite3.Connection]] = []
         self._all_lock = threading.Lock()
         self._conn.executescript(DDL)
         if "pid_started" not in {r[1] for r in self._conn.execute("PRAGMA table_info(jobs)")}:
@@ -165,17 +165,24 @@ class Store:
             c.execute("PRAGMA busy_timeout=60000")
             self._local.conn = c
             with self._all_lock:
-                self._all.append(c)
+                self._all.append((threading.current_thread(), c))
         return c
 
     def close(self) -> None:
+        """Close the connections of this thread and of threads that have ended. A connection still owned by a live
+        thread is left alone (closing it under that thread crashes SQLite); it closes when that thread's work ends."""
+        me = threading.current_thread()
         with self._all_lock:
-            for c in self._all:
-                try:
-                    c.close()
-                except sqlite3.Error:
-                    pass
-            self._all.clear()
+            keep = []
+            for th, c in self._all:
+                if th is me or not th.is_alive():
+                    try:
+                        c.close()
+                    except sqlite3.Error:
+                        pass
+                else:
+                    keep.append((th, c))
+            self._all = keep
         self._local = threading.local()
 
     @contextmanager

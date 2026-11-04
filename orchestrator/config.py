@@ -48,6 +48,7 @@ DEFAULTS: dict[str, Any] = {
         "max_tool_steps": 40,          # tool calls per worker ticket (with a countdown before the end)
         "max_manager_tool_steps": 25,  # tool calls per manager decision
         "max_manager_rounds": 20,      # decisions per manager ticket before it is escalated as stuck
+        "approve_cross_department_work": False,   # true: request_work tickets wait for the top manager (tight budgets)
         "max_worker_retries": 2,       # manager retries per worker before it must delegate differently or give up
         "default_rigor": "balanced",
         "verification_is_advisory": True,
