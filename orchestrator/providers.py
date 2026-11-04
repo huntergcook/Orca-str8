@@ -1,16 +1,28 @@
 """Provider interface and implementations. Nothing else in the runtime imports a vendor SDK.
 
-  AnthropicProvider  Claude via the official SDK
-  DeepSeekProvider   DeepSeek's OpenAI-format chat completions API over plain httpx
-  RoutingProvider    sends each model ID to the provider that serves it
-  MockProvider       scripted, for tests
+  AnthropicProvider   Claude via the official SDK (API key)
+  OpenAICompatProvider  any OpenAI-format /chat/completions API over plain httpx: DeepSeek, OpenAI,
+                      and local servers (Ollama, LM Studio, vLLM) that need no key
+  CliProvider         a command-line agent you already have (Claude Code, Codex, or any command) used as a
+                      plain text-completion backend: no API key needed, runs on your CLI subscription
+  RoutingProvider     sends each model ID to the provider that serves it
+  MockProvider        scripted, for tests
+
+CLI models are qualified as "<provider>:<model>" (e.g. "codex-cli:default") so two CLIs that both offer a
+"default" model can be told apart. "default" means: do not pass a model flag, use the CLI's own default,
+which is whatever you normally run it with.
 """
 from __future__ import annotations
 
+import json
 import os
+import shutil
+import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Any, Callable, Protocol
 
 
 @dataclass
@@ -79,19 +91,21 @@ class AnthropicProvider:
         )
 
 
-class DeepSeekProvider:
-    """DeepSeek's OpenAI-format API (POST {base_url}/chat/completions).
+class OpenAICompatProvider:
+    """Any OpenAI-format API (POST {base_url}/chat/completions): DeepSeek, OpenAI, Together, and local
+    servers such as Ollama (http://localhost:11434/v1) that need no key (require_key=False).
 
-    Both current models (deepseek-flash, deepseek-v4-pro) think by default; only the final
-    `content` is returned to the orchestrator (reasoning_content is dropped). A `content_filter`
-    finish is treated as a refusal so it follows the same retry-once-then-escalate policy.
+    Only the final `content` is returned (reasoning_content is dropped). A `content_filter` finish is
+    treated as a refusal so it follows the same retry-once-then-escalate policy.
     """
 
     def __init__(self, api_key: str | None = None, api_key_env: str = "DEEPSEEK_API_KEY",
                  base_url: str = "https://api.deepseek.com", max_output_tokens: int = 32000,
-                 client: Any | None = None, retries: int = 3, backoff: float = 2.0) -> None:
+                 client: Any | None = None, retries: int = 3, backoff: float = 2.0,
+                 require_key: bool = True) -> None:
         self.api_key = api_key or os.environ.get(api_key_env or "")
         self.api_key_env = api_key_env
+        self.require_key = require_key
         self.base_url = base_url.rstrip("/")
         self.max_output_tokens = max_output_tokens
         self.retries, self.backoff = retries, backoff
@@ -102,11 +116,13 @@ class DeepSeekProvider:
 
     def complete(self, *, model: str, system: str, messages: list[dict[str, Any]],
                  max_tokens: int = 16000) -> Completion:
-        if not self.api_key:
-            raise RuntimeError(f"no DeepSeek API key: set the {self.api_key_env} environment variable")
+        if self.require_key and not self.api_key:
+            raise RuntimeError(f"no API key: set the {self.api_key_env} environment variable")
         body = {"model": model, "max_tokens": min(max_tokens, self.max_output_tokens), "stream": False,
                 "messages": [{"role": "system", "content": system}, *messages]}
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         last = ""
         for attempt in range(self.retries):
             r = self.client.post(f"{self.base_url}/chat/completions", json=body, headers=headers)
@@ -115,7 +131,7 @@ class DeepSeekProvider:
                 time.sleep(self.backoff * (2 ** attempt))
                 continue
             if r.status_code >= 400:
-                raise RuntimeError(f"DeepSeek API error {r.status_code}: {r.text[:300]}")
+                raise RuntimeError(f"API error {r.status_code} from {self.base_url}: {r.text[:300]}")
             data = r.json()
             choice = data["choices"][0]
             refused = choice.get("finish_reason") == "content_filter"
@@ -128,19 +144,142 @@ class DeepSeekProvider:
                 output_tokens=usage.get("completion_tokens", 0),
                 model=model,
             )
-        raise RuntimeError(f"DeepSeek API unavailable after {self.retries} attempts ({last})")
+        raise RuntimeError(f"API unavailable after {self.retries} attempts ({last})")
+
+
+DeepSeekProvider = OpenAICompatProvider      # original name, kept for existing code and tests
+
+CLAUDE_SYSTEM = ("You are a plain text assistant. Follow the instructions in the message exactly and reply "
+                 "with only what they ask for.")
+
+# How to drive each supported CLI as a text-completion engine (tools off / read-only, no saved sessions).
+# Flags verified against `claude --help` and OpenAI's `codex exec` reference. "stdin" = prompt on stdin.
+CLI_PRESETS: dict[str, dict[str, Any]] = {
+    "claude": {"exe": "claude",
+               "args": ["-p", "--output-format", "text", "--tools", "", "--no-session-persistence",
+                        "--system-prompt", CLAUDE_SYSTEM],
+               "model_flag": "--model", "output": "stdout"},
+    "codex": {"exe": "codex",
+              "args": ["exec", "--skip-git-repo-check", "--ephemeral", "--sandbox", "read-only"],
+              "model_flag": "-m", "output": "file", "outfile_flag": "-o", "prompt_arg": "-"},
+}
+
+
+def flatten_prompt(system: str, messages: list[dict[str, Any]]) -> str:
+    """One text prompt from a system prompt and a conversation, for CLIs that take a single prompt."""
+    parts = ["# Instructions (follow these exactly)", system.strip(), "", "# Conversation"]
+    for m in messages:
+        content = m["content"] if isinstance(m["content"], str) else json.dumps(m["content"])
+        parts += [f"## {'USER' if m['role'] == 'user' else 'ASSISTANT'}", content.strip(), ""]
+    parts += ["## ASSISTANT", "(Write your reply to the last USER message now.)"]
+    return "\n".join(parts)
+
+
+def _default_cli_run(cmd: list[str], input_text: str, timeout: float, cwd: str | None) -> tuple[int, str, str]:
+    r = subprocess.run(cmd, input=input_text, capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=timeout, cwd=cwd)
+    return r.returncode, r.stdout, r.stderr
+
+
+class CliProvider:
+    """A command-line agent used as a plain text-completion backend, so people with only a CLI
+    subscription (no API key) can run the whole orchestrator. Configure with a preset ('claude',
+    'codex') or a custom command list:
+
+        {type: cli, preset: codex}
+        {type: cli, command: ["mytool", "--model", "{model}"], input: stdin, output: stdout}
+
+    Custom commands may use {model} and {outfile}. Token counts are rough estimates (chars/4) because
+    CLIs do not report usage. Each call spawns a process, so it is slower than an API call.
+    """
+
+    def __init__(self, preset: str | None = None, command: list[str] | None = None, input: str = "stdin",
+                 output: str = "stdout", timeout: float = 900, cwd: str | None = None,
+                 run: Callable[..., tuple[int, str, str]] = _default_cli_run,
+                 which: Callable[[str], str | None] = shutil.which) -> None:
+        if preset is None and not command:
+            raise ValueError("a CLI provider needs a preset or a command")
+        if preset is not None and preset not in CLI_PRESETS:
+            raise ValueError(f"unknown CLI preset {preset!r}; known: {sorted(CLI_PRESETS)}")
+        self.preset, self.command, self.input, self.output = preset, command, input, output
+        self.timeout, self.cwd, self.run, self.which = timeout, cwd, run, which
+
+    @property
+    def executable(self) -> str:
+        return CLI_PRESETS[self.preset]["exe"] if self.preset else self.command[0]
+
+    def build(self, model: str, outfile: str | None) -> tuple[list[str], str | None]:
+        """(command, prompt_arg) - prompt_arg is appended last when the CLI takes the prompt as an argument."""
+        exe = self.which(self.executable)
+        if exe is None:
+            raise RuntimeError(f"CLI '{self.executable}' was not found on PATH")
+        use_model = model not in ("", "default")
+        if self.preset:
+            p = CLI_PRESETS[self.preset]
+            cmd = [exe, *p["args"]]
+            if p["output"] == "file":
+                cmd += [p["outfile_flag"], outfile or ""]
+            if use_model:
+                cmd += [p["model_flag"], model]
+            return cmd, p.get("prompt_arg")
+        cmd = [exe] + [a.replace("{model}", model if use_model else "").replace("{outfile}", outfile or "")
+                       for a in self.command[1:]]
+        return cmd, None
+
+    def complete(self, *, model: str, system: str, messages: list[dict[str, Any]],
+                 max_tokens: int = 16000) -> Completion:
+        prompt = flatten_prompt(system, messages)
+        wants_file = (CLI_PRESETS[self.preset]["output"] == "file") if self.preset else (
+            self.output == "file" or any("{outfile}" in a for a in self.command))
+        out_dir = tempfile.mkdtemp(prefix="orch-cli-") if wants_file else None
+        outfile = str(Path(out_dir) / "reply.txt") if out_dir else None
+        try:
+            cmd, prompt_arg = self.build(model, outfile)
+            if self.preset:
+                if prompt_arg:
+                    cmd.append(prompt_arg)                      # e.g. codex: "-" means read stdin
+                stdin_text = prompt
+            elif self.input == "arg":
+                cmd.append(prompt)
+                stdin_text = ""
+            else:
+                stdin_text = prompt
+            rc, stdout, stderr = self.run(cmd, stdin_text, self.timeout, self.cwd)
+            if rc != 0:
+                raise RuntimeError(f"{self.executable} exited with code {rc}: {(stderr or stdout).strip()[-300:]}")
+            if outfile and Path(outfile).is_file():
+                text = Path(outfile).read_text(encoding="utf-8", errors="replace")
+            else:
+                text = stdout
+            text = text.strip()
+            if not text:
+                raise RuntimeError(f"{self.executable} returned no text")
+        finally:
+            if out_dir:
+                shutil.rmtree(out_dir, ignore_errors=True)
+        return Completion(text=text, input_tokens=len(prompt) // 4, output_tokens=len(text) // 4, model=model)
 
 
 class RoutingProvider:
-    """Routes each model ID to its provider, creating providers lazily so a config that only
-    uses DeepSeek never needs an Anthropic key (and vice versa)."""
+    """Routes each model ID to its provider, creating providers lazily so a config that only uses one
+    vendor never needs another's key. "<provider>:<model>" IDs route explicitly (used for CLIs)."""
 
     def __init__(self, factories: dict[str, Any], model_provider: dict[str, str],
                  default: str = "anthropic") -> None:
         self.factories, self.model_provider, self.default = factories, model_provider, default
         self._made: dict[str, Provider] = {}
 
+    def resolve(self, model: str) -> tuple[str, str]:
+        """(provider name, model id to send to that provider)."""
+        if ":" in model:
+            head, rest = model.split(":", 1)
+            if head in self.factories:
+                return head, rest
+        return self.provider_name(model), model
+
     def provider_name(self, model: str) -> str:
+        if ":" in model and model.split(":", 1)[0] in self.factories:
+            return model.split(":", 1)[0]
         if model in self.model_provider:
             return self.model_provider[model]
         if model.startswith("deepseek"):
@@ -151,24 +290,46 @@ class RoutingProvider:
 
     def complete(self, *, model: str, system: str, messages: list[dict[str, Any]],
                  max_tokens: int = 16000) -> Completion:
-        name = self.provider_name(model)
+        name, real = self.resolve(model)
         if name not in self._made:
             if name not in self.factories:
                 raise RuntimeError(f"no provider '{name}' configured for model {model}")
             self._made[name] = self.factories[name]()
-        return self._made[name].complete(model=model, system=system, messages=messages, max_tokens=max_tokens)
+        c = self._made[name].complete(model=real, system=system, messages=messages, max_tokens=max_tokens)
+        c.model = model                       # report the ID the orchestrator uses, e.g. "codex-cli:default"
+        return c
+
+
+BUILTIN_KINDS = {"anthropic": "anthropic", "deepseek": "openai_compat", "openai": "openai_compat",
+                 "ollama": "openai_compat", "claude-cli": "cli", "codex-cli": "cli"}
+
+
+def provider_kind(name: str, spec: dict[str, Any]) -> str:
+    """'anthropic', 'openai_compat' or 'cli' for a configured provider."""
+    if spec.get("type"):
+        return spec["type"]
+    if "preset" in spec or "command" in spec:
+        return "cli"
+    return BUILTIN_KINDS.get(name, "openai_compat")
 
 
 def build_provider(cfg: dict[str, Any]) -> RoutingProvider:
-    """Routing provider from config: `providers:` section plus per-tier `provider:` fields."""
+    """Routing provider from config: every entry of `providers:` becomes a backend, and per-tier
+    `provider:` fields map plain model IDs to backends."""
     pcfg = cfg.get("providers", {})
-    factories = {
-        "anthropic": lambda: AnthropicProvider(api_key_env=pcfg.get("anthropic", {}).get("api_key_env")),
-        "deepseek": lambda: DeepSeekProvider(
-            api_key_env=pcfg.get("deepseek", {}).get("api_key_env", "DEEPSEEK_API_KEY"),
-            base_url=pcfg.get("deepseek", {}).get("base_url", "https://api.deepseek.com"),
-            max_output_tokens=pcfg.get("deepseek", {}).get("max_output_tokens", 32000)),
-    }
+    factories: dict[str, Any] = {}
+    for name, spec in pcfg.items():
+        kind = provider_kind(name, spec)
+        if kind == "anthropic":
+            factories[name] = lambda s=spec: AnthropicProvider(api_key_env=s.get("api_key_env"))
+        elif kind == "cli":
+            factories[name] = lambda s=spec: CliProvider(
+                preset=s.get("preset"), command=s.get("command"), input=s.get("input", "stdin"),
+                output=s.get("output", "stdout"), timeout=s.get("timeout", 900))
+        else:
+            factories[name] = lambda s=spec: OpenAICompatProvider(
+                api_key_env=s.get("api_key_env", ""), base_url=s.get("base_url", "https://api.deepseek.com"),
+                max_output_tokens=s.get("max_output_tokens", 32000), require_key=s.get("require_key", True))
     model_provider: dict[str, str] = {}
     models = cfg.get("models", {})
     for tier in ("top", "manager", "worker"):
@@ -179,3 +340,23 @@ def build_provider(cfg: dict[str, Any]) -> RoutingProvider:
         if isinstance(item, dict) and item.get("model") and item.get("provider"):
             model_provider[item["model"]] = item["provider"]
     return RoutingProvider(factories, model_provider)
+
+
+def requirements(cfg: dict[str, Any], models: list[str]) -> dict[str, list[str]]:
+    """What the given model IDs need that is not available: {'keys': [env vars], 'clis': [executables]}."""
+    router = build_provider(cfg)
+    keys: list[str] = []
+    clis: list[str] = []
+    for m in dict.fromkeys(models):
+        name, _ = router.resolve(m)
+        spec = cfg.get("providers", {}).get(name, {})
+        kind = provider_kind(name, spec)
+        if kind == "cli":
+            exe = CLI_PRESETS[spec["preset"]]["exe"] if spec.get("preset") else (spec.get("command") or [""])[0]
+            if exe and shutil.which(exe) is None and exe not in clis:
+                clis.append(exe)
+        elif spec.get("require_key", True):
+            var = spec.get("api_key_env")
+            if var and not os.environ.get(var) and var not in keys:
+                keys.append(var)
+    return {"keys": keys, "clis": clis}

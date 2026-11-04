@@ -95,10 +95,26 @@ def command_text(project: str | Path | None = None) -> str:
         proj = str(Path(project).resolve())
         src = src.replace("python -m orchestrator.ctl", f'python -m orchestrator.ctl --project "{proj}"')
         src = src.replace("workspace/run.log", f'"{Path(proj).as_posix()}/workspace/run.log"')
+        src = src.replace("python -m orchestrator.smoke", f'python -m orchestrator.smoke --project "{proj}"')
         src = src.replace("python -m orchestrator.dashboard", f'python -m orchestrator.dashboard --project "{proj}"')
         src = src.replace("**Always run every `ctl` command from the project folder, which is this session's working directory.",
                           f"**This project is `{proj}`; every `ctl` command below already carries `--project` so all work stays inside it.")
     return src
+
+
+def agents_text(project: str | Path) -> str:
+    """The same top-manager instructions as AGENTS.md, which Codex (and other agents) read automatically."""
+    body = command_text(project)
+    if body.startswith("---"):                                  # drop the Claude Code slash-command frontmatter
+        body = body.split("---", 2)[2].lstrip()
+    body = body.replace("The human's request, if any: $ARGUMENTS", "The human's request is whatever they ask you next.")
+    blank = chr(10) * 2
+    head = ("# Orchestrator project: top manager instructions" + blank +
+            "This folder is run by an LLM orchestrator. When the human asks you to run, continue, check on or "
+            "manage the project, you are its top manager and follow everything below. (Written for Codex; any "
+            "agent that reads AGENTS.md works. Claude Code users get the same text as the /orchestrate command.)"
+            + blank)
+    return head + body
 
 
 def scaffold(target: str | Path, force: bool = False) -> list[Path]:
@@ -111,6 +127,7 @@ def scaffold(target: str | Path, force: bool = False) -> list[Path]:
         ".gitignore": GITIGNORE,
         "README.md": README.format(name=root.name, orch=ORCH_HOME),
         ".claude/commands/orchestrate.md": command_text(root),
+        "AGENTS.md": agents_text(root),
     }
     written = []
     for rel, text in files.items():

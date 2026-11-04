@@ -31,6 +31,31 @@ Set the top tier to `{ provider: external, model: claude-code }` and run `claude
 managers, workers and verifiers run on the API providers you configure (e.g. DeepSeek), so no Claude API key is
 needed. All state is in `workspace/`, so a fresh session resumes with `ctl resume`.
 
+## Models: use whatever access you have
+The lab does not care whether you have API keys, only a CLI subscription, or a local model. Each role (manager, worker, verifier) can run on:
+
+| Backend | Needs | Example |
+|---|---|---|
+| Claude API | `ANTHROPIC_API_KEY` | `models set --provider anthropic --model <model>` |
+| DeepSeek, OpenAI | their API key | `models set --provider deepseek --model deepseek-flash` |
+| Local (Ollama, any OpenAI-compatible server) | nothing | `models set --provider ollama --model llama3` |
+| **Claude Code or Codex CLI** | the CLI installed and logged in; **no API key** | `models use-cli codex` |
+
+```
+python -m orchestrator.ctl models                      # what each role runs on now, and what this machine can use
+python -m orchestrator.ctl models use-cli codex        # every manager/worker/verifier = your Codex CLI's default model
+python -m orchestrator.ctl models use-cli claude --model sonnet --tiers worker
+python -m orchestrator.ctl models set --tiers worker --provider deepseek --model deepseek-flash --fallback deepseek:deepseek-v4-pro
+python -m orchestrator.smoke                           # one tiny call per configured model
+```
+`use-cli` with no `--model` passes no model flag, so every role runs the same model you normally use in that CLI. Your top manager (Claude Code or Codex) can run these for you: its instructions tell it to detect what you have, ask, and apply. Choices go in `config/models.yaml` (merged over `orchestrator.yaml`; delete it to undo). CLI backends start a process per call, so they are slower and count against that CLI's usage limits. A project scaffolded with `python -m orchestrator.init` gets both a `/orchestrate` command (Claude Code) and an `AGENTS.md` (Codex).
+
+## Escalations
+Problems climb worker -> department manager -> top manager -> you, and each level must try to fix it first. Managers see why a worker failed, can retry it with guidance on a fallback model, or delegate differently; only what they cannot resolve reaches the top manager, and only what it cannot resolve reaches you. Safety issues and model refusals go straight to you by policy. The dashboard's Needs-human panel has Answer / Retry / Cancel; "Being handled below you" shows the rest.
+
+## Power loss and restarts
+State lives in SQLite (fully synced) and atomically written files. After a crash or power cut, reopen your top manager: `resume` reports what was interrupted, `recover` clears stale locks and marks dead jobs lost, and unfinished workers restart knowing they were interrupted. Hardware claims are never released automatically; you confirm the device state, then `release-resource`. The dashboard shows a Resume run button.
+
 ## Layout
 - `orchestrator/ctl.py`: control interface for an external top manager
 - `.claude/commands/orchestrate.md`: the `/orchestrate` slash command

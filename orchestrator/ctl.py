@@ -8,7 +8,7 @@ files and SQLite, so a fresh session can resume with `resume`.
     python -m orchestrator.ctl [--config PATH] <command> [args]      (JSON on stdout)
 
 Commands: resume | board | ticket ID | create [--file F | stdin JSON] | run | watch | answer ID TEXT |
-          retry ID [TEXT] | cancel ID [TEXT] | handoff ID [TEXT] | recover | human TEXT |
+          retry ID [TEXT] | cancel ID [TEXT] | handoff ID [TEXT] | recover | human TEXT | models ... |
           release-resource NAME [REASON] | state [--set (stdin)] | log TEXT | finish SUMMARY | pause | unpause
 """
 from __future__ import annotations
@@ -26,8 +26,9 @@ from .config import enter_project, load_config, model_chain
 from .hardware import hardware_brief
 from .limits import GuardedProvider, Halted
 from .memory import human_log
+from .modelcfg import DEFAULT_TIERS, current, detect, set_models, use_cli
 from .util import append_durable, atomic_write, process_alive, process_stamp
-from .providers import Provider, build_provider
+from .providers import CLI_PRESETS, Provider, build_provider, requirements
 from .store import Store, StoreError
 from .top import TopManager
 
@@ -101,7 +102,7 @@ class Ctl:
                 "human_log_tail": log.read_text(encoding="utf-8")[-3000:] if log.exists() else "",
                 "hardware": hardware_brief(self.store) or "(none)",
                 "finished": (self.workspace / "FINISHED").exists(),
-                "missing_keys": self.missing_keys(), "recovery": self.recovery(), **self.where(), **self.board()}
+                "missing_keys": self.missing_keys(), "missing_clis": self.missing_clis(), "recovery": self.recovery(), **self.where(), **self.board()}
 
     # ------------------------------------------------------------------ acting
 
@@ -122,24 +123,27 @@ class Ctl:
         """True if a `run` process is alive (the lock file holds a live pid)."""
         return actions.run_is_active(self.workspace)
 
-    def missing_keys(self) -> list[str]:
-        """API key variables the configured models need but the environment lacks."""
-        if self._custom_provider:
-            return []
-        provider = build_provider(self.cfg)
+    def _models_in_use(self) -> list[str]:
         models: list[str] = []
         for tier in ("manager", "worker"):
             if self.cfg["models"][tier].get("provider") != "external":
                 models += model_chain(self.cfg, tier)
         if self.cfg["verification"].get("enabled"):
             models += list(self.cfg["verification"].get("verifier_models") or [])
-        need: list[str] = []
-        for m in dict.fromkeys(models):
-            name = provider.provider_name(m)
-            var = self.cfg["providers"].get(name, {}).get("api_key_env")
-            if var and not os.environ.get(var) and var not in need:
-                need.append(var)
-        return need
+        return models
+
+    def _missing(self) -> dict[str, list[str]]:
+        if self._custom_provider:
+            return {"keys": [], "clis": []}
+        return requirements(self.cfg, self._models_in_use())
+
+    def missing_keys(self) -> list[str]:
+        """API key variables the configured models need but the environment lacks."""
+        return self._missing()["keys"]
+
+    def missing_clis(self) -> list[str]:
+        """CLI backends (claude, codex, ...) the configured models need but PATH lacks."""
+        return self._missing()["clis"]
 
     def where(self) -> dict[str, Any]:
         ws = self.workspace.resolve()
@@ -151,10 +155,13 @@ class Ctl:
 
     def run(self) -> dict[str, Any]:
         """Run department managers on all open/in-progress tickets. May take a long time."""
-        miss = self.missing_keys()
-        if miss:
-            raise StoreError(f"missing API key(s): {', '.join(miss)}. Put them in {Path.cwd() / '.env'} or the "
+        need = self._missing()
+        if need["keys"]:
+            raise StoreError(f"missing API key(s): {', '.join(need['keys'])}. Put them in {Path.cwd() / '.env'} or the "
                              f"environment. Working dir: {Path.cwd()}; workspace: {self.workspace.resolve()}")
+        if need["clis"]:
+            raise StoreError(f"required CLI(s) not found on PATH: {', '.join(need['clis'])}. Install and log in, or "
+                             "choose other models with `ctl models`.")
         if self.run_active():
             raise StoreError(f"a run is already active (pid {self.lock_path.read_text().strip()}); "
                              "watch `board` instead of starting another")
@@ -305,6 +312,28 @@ class Ctl:
         return {"paused": on}
 
 
+def _models_command(a: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    tiers = [t.strip() for t in a.tiers.split(",") if t.strip()]
+    try:
+        if a.action == "detect":
+            out: dict[str, Any] = detect()
+        elif a.action == "show":
+            out = {"current": current(cfg), "detected": detect()}
+        elif a.action == "use-cli":
+            if not a.cli:
+                raise ValueError("use-cli needs --cli (claude or codex)")
+            out = use_cli(a.config, a.cli, a.model, tiers)
+        else:
+            if not a.provider:
+                raise ValueError("set needs --provider (and usually --model)")
+            out = set_models(a.config, tiers, a.provider, a.model, a.fallback, a.clear_fallback)
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    except (ValueError, OSError) as e:
+        print(json.dumps({"error": f"{type(e).__name__}: {e}"}))
+        return 1
+
+
 def main(argv: list[str] | None = None, provider: Provider | None = None) -> int:
     ap = argparse.ArgumentParser(prog="orchestrator.ctl")
     ap.add_argument("--project", help="project folder (default: $ORCHESTRATOR_PROJECT or the current directory)")
@@ -329,6 +358,14 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
     s.add_argument("--set", action="store_true", help="replace state notes with stdin")
     sub.add_parser("log").add_argument("text")
     sub.add_parser("human").add_argument("text")
+    m = sub.add_parser("models", help="show/detect/set which models run each role")
+    m.add_argument("action", nargs="?", default="show", choices=["show", "detect", "set", "use-cli"])
+    m.add_argument("--tiers", default=",".join(DEFAULT_TIERS), help="comma list of: manager, worker, verifier, top")
+    m.add_argument("--provider")
+    m.add_argument("--model", default="default")
+    m.add_argument("--cli", choices=sorted(CLI_PRESETS))
+    m.add_argument("--fallback", action="append", help="provider:model (repeatable)")
+    m.add_argument("--clear-fallback", action="store_true")
     rr = sub.add_parser("release-resource")
     rr.add_argument("name")
     rr.add_argument("reason", nargs="?", default="")
@@ -341,6 +378,8 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
         print(json.dumps({"error": str(e)}))
         return 1
     cfg = load_config(a.config)
+    if a.cmd == "models":
+        return _models_command(a, cfg)
     ctl = Ctl(cfg, cfg["workspace"], provider)
     try:
         if a.cmd == "create":

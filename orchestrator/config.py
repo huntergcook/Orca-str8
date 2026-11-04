@@ -13,6 +13,10 @@ DEFAULTS: dict[str, Any] = {
         "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
         "deepseek": {"api_key_env": "DEEPSEEK_API_KEY", "base_url": "https://api.deepseek.com",
                      "max_output_tokens": 32000},
+        "openai": {"type": "openai_compat", "api_key_env": "OPENAI_API_KEY", "base_url": "https://api.openai.com/v1"},
+        "ollama": {"type": "openai_compat", "base_url": "http://localhost:11434/v1", "require_key": False},
+        "claude-cli": {"type": "cli", "preset": "claude"},     # Claude Code as a backend: no API key needed
+        "codex-cli": {"type": "cli", "preset": "codex"},       # Codex CLI as a backend: no API key needed
     },
     "models": {
         "top": {"provider": "anthropic", "model": "claude-opus-5-5"},
@@ -89,17 +93,37 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     load_dotenv(Path.cwd() / ".env")
     if path is not None:
         load_dotenv(Path(path).resolve().parent.parent / ".env")
-    if path is None or not Path(path).exists():
+    if path is None:
         return copy.deepcopy(DEFAULTS)
-    data = yaml.safe_load(Path(path).read_text()) or {}
-    return _merge(DEFAULTS, data)
+    data = (yaml.safe_load(Path(path).read_text()) or {}) if Path(path).exists() else {}
+    cfg = _merge(DEFAULTS, data)
+    overlay = overlay_path(path)
+    if overlay.exists():                       # model choices made with `ctl models` win over the base file
+        over = yaml.safe_load(overlay.read_text()) or {}
+        cfg = _merge(cfg, {k: v for k, v in over.items() if k in ("models", "verification", "providers")})
+    return cfg
+
+
+def overlay_path(config_path: str | Path) -> Path:
+    return Path(config_path).resolve().parent / "models.yaml"
+
+
+def is_cli_provider(cfg: dict[str, Any], name: str | None) -> bool:
+    spec = cfg.get("providers", {}).get(name or "", {})
+    return spec.get("type") == "cli" or "preset" in spec or "command" in spec
+
+
+def qualify(cfg: dict[str, Any], provider: str | None, model: str) -> str:
+    """CLI models are '<provider>:<model>' so two CLIs that both have a 'default' model stay distinct."""
+    return f"{provider}:{model}" if provider and is_cli_provider(cfg, provider) else model
 
 
 def model_chain(cfg: dict[str, Any], tier: str) -> list[str]:
     """Primary model for a tier, followed by capability-fallback models."""
-    chain = [cfg["models"][tier]["model"]]
+    spec = cfg["models"][tier]
+    chain = [qualify(cfg, spec.get("provider"), spec["model"])]
     for item in cfg["models"].get("fallback_chain") or []:
-        m = item["model"] if isinstance(item, dict) else item
+        m = qualify(cfg, item.get("provider"), item["model"]) if isinstance(item, dict) else item
         if m not in chain:
             chain.append(m)
     return chain
