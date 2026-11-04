@@ -38,14 +38,19 @@
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const rows = (a, f) => a.map(f).join("");
+function workerSummary(ws) {
+  if (!ws.length) return "no workers";
+  const c = {}; ws.forEach(w => c[w.status] = (c[w.status] || 0) + 1);
+  return ws.length + " worker" + (ws.length > 1 ? "s" : "") + " (" + Object.entries(c).map(([k, v]) => v + " " + k).join(", ") + ")";
+}
 function render(s) {
   $("need-sec").hidden = !s.needs_human.length;
   $("need").innerHTML = rows(s.needs_human, n =>
     `<div><b>${esc(n.title)}</b> <code>${esc(n.id)}</code> <span class="pill">${esc(n.status)}</span> ${esc(n.assignee)}<div class="mut">${esc(n.detail)}</div></div>`);
   const org = Object.entries(s.org);
   $("org").innerHTML = org.length ? rows(org, ([m, ws]) =>
-    `<details open><summary><b>${esc(m)}</b> <span class="mut">${ws.length} active worker(s)</span></summary><ul>` +
-    rows(ws, w => `<li>${esc(w.worker)} <span class="pill">${esc(w.status)}</span> ${esc(w.title)}</li>`) + `</ul></details>`) : '<span class="mut">no managers yet</span>';
+    `<details open><summary><b>${esc(m)}</b> <span class="mut">${workerSummary(ws)}</span></summary><ul>` +
+    rows(ws, w => `<li>${esc(String(w.worker).replace(/^worker:/, ""))} <span class="pill ${esc(w.status)}">${esc(w.status)}</span> ${esc(w.title)} <code class="mut">${esc(w.ticket)}</code></li>`) + `</ul></details>`) : '<span class="mut">no managers yet</span>';
   $("hw").innerHTML = (s.resources.length ? `<table><tr><th>resource</th><th>state</th><th>holder</th><th>safe to stop</th></tr>` +
     rows(s.resources, r => `<tr><td>${esc(r.name)}</td><td>${esc(r.state)}</td><td>${esc(r.holder_ticket ?? "")}</td><td class="mut">${esc(r.safe_to_stop)}</td></tr>`) + `</table>` : '<span class="mut">no resources registered</span>') +
     (s.jobs.length ? `<table style="margin-top:8px"><tr><th>job</th><th>name</th><th>state</th><th>resource</th></tr>` +

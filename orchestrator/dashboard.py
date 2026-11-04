@@ -43,17 +43,23 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
             if t["status"] == "escalated" or (t["status"] == "needs_clarification" and t["parent_id"] is None)
         ]
 
-        # 2. org tree: managers (top-level assignees) and their live workers
+        # 2. org tree: managers (top-level assignees) and every worker under their unfinished tickets
+        #    (any worker status, so finished ones stay visible while the parent ticket is still open),
+        #    in creation order. Workers are numbered per role (surveyor-1, surveyor-2, ...).
+        done_states = ("done", "failed", "cancelled")
+        by_id = {t["id"]: t for t in tickets}
         org: dict[str, list[dict[str, Any]]] = {}
         for t in tickets:
             if t["parent_id"] is None:
                 org.setdefault(t["assignee"], [])
         for t in tickets:
-            if t["parent_id"] is not None and t["status"] in ACTIVE:
-                root = t["path_trace"][1] if len(t["path_trace"]) > 1 else None
-                owner = next((p["assignee"] for p in tickets if p["id"] == root), None) if root else None
-                org.setdefault(owner or "unknown", []).append(
-                    {"worker": t["assignee"], "ticket": t["id"], "title": t["title"], "status": t["status"]})
+            if t["parent_id"] is None:
+                continue
+            root = by_id.get(t["path_trace"][1]) if len(t["path_trace"]) > 1 else None
+            if t["status"] in ACTIVE or (root is not None and root["status"] not in done_states):
+                org.setdefault(root["assignee"] if root else "unknown", []).append(
+                    {"worker": t["assignee"], "role": t.get("worker_role"), "ticket": t["id"],
+                     "title": t["title"], "status": t["status"]})
 
         board = [{"id": t["id"], "title": t["title"], "status": t["status"], "assignee": t["assignee"],
                   "trace": t["path_trace"], "rigor": t.get("rigor", "balanced"), "parent_id": t["parent_id"]}
@@ -89,7 +95,7 @@ def seed_demo(db_path: str | Path) -> None:
     done = st.create_ticket({**base, "title": "Survey serial libraries", "assignee": "research_manager",
                              "rigor": "quick_and_dirty"}, "top_manager")
     st.transition(done["id"], "in_progress", "research_manager")
-    w1 = st.create_ticket({**base, "title": "Read pyserial docs", "assignee": "worker:surveyor"},
+    w1 = st.create_ticket({**base, "title": "Read pyserial docs", "assignee": "worker:surveyor-1"},
                           "research_manager", parent_id=done["id"])
     st.transition(w1["id"], "in_progress", "worker:surveyor")
     st.transition(w1["id"], "done", "worker:surveyor", result={"summary": "pyserial is the standard"})
@@ -97,9 +103,16 @@ def seed_demo(db_path: str | Path) -> None:
     st.transition(done["id"], "done", "research_manager", result={"recommendation": "pyserial"})
     tool = st.create_ticket({**base, "title": "Need a serial logger tool", "assignee": "tooling_manager"}, "worker:exp")
     st.transition(tool["id"], "in_progress", "tooling_manager")
-    w2 = st.create_ticket({**base, "title": "Find logger on GitHub", "assignee": "worker:tool_scout"},
-                          "tooling_manager", parent_id=tool["id"])
-    st.transition(w2["id"], "in_progress", "worker:tool_scout")
+    w2 = st.create_ticket({**base, "title": "Find logger on GitHub", "assignee": "worker:tool_scout-1",
+                           "worker_role": "tool_scout"}, "tooling_manager", parent_id=tool["id"])
+    st.transition(w2["id"], "in_progress", "worker:tool_scout-1")
+    w3 = st.create_ticket({**base, "title": "Check PyPI for serial loggers", "assignee": "worker:tool_scout-2",
+                           "worker_role": "tool_scout"}, "tooling_manager", parent_id=tool["id"])
+    st.transition(w3["id"], "in_progress", "worker:tool_scout-2")
+    w4 = st.create_ticket({**base, "title": "Compare two candidates", "assignee": "worker:tool_scout-3",
+                           "worker_role": "tool_scout"}, "tooling_manager", parent_id=tool["id"])
+    st.transition(w4["id"], "in_progress", "worker:tool_scout-3")
+    st.transition(w4["id"], "done", "worker:tool_scout-3", result={"pick": "pyserial-asyncio"})
     risky = st.create_ticket({**base, "title": "Sweep heater power", "assignee": "experiment_manager",
                               "rigor": "rigorous"}, "top_manager")
     st.transition(risky["id"], "in_progress", "experiment_manager")

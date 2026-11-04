@@ -110,7 +110,10 @@ class Manager:
         cap = self.cfg["policies"]["max_children_per_agent"]
         for spec in d.get("tickets", []):
             spec = dict(spec)
-            spec["assignee"] = f"worker:{spec.get('worker_role', 'worker')}"
+            role = spec.get("worker_role", "worker")
+            # Number workers per role under this ticket (surveyor-1, surveyor-2, ...) so they can be told apart.
+            n = 1 + sum(1 for c in self.store.list_tickets(parent_id=ticket_id) if c["worker_role"] == role)
+            spec["assignee"] = f"worker:{role}-{n}"
             spec.setdefault("rigor", self.store.get_ticket(ticket_id).get("rigor", "balanced"))
             self.store.create_ticket(spec, actor=self.name, parent_id=ticket_id, max_children=cap)
 
