@@ -146,12 +146,12 @@ class Manager:
         invalid = tool_steps = 0
         while True:
             model = self.manager_models[min(invalid, len(self.manager_models) - 1)]
-            if self.store.get_ticket(ticket_id)["status"] == "cancelled":
+            if ticket_id and self.store.get_ticket(ticket_id)["status"] == "cancelled":
                 raise _Cancelled(ticket_id)
             self._status(ticket_id, "thinking", doing, model)
             c = self.provider.complete(model=model, system=system, messages=msgs)
             self.store.record_usage(ticket_id, self.name, self.department, c, self._agent_id(ticket_id))
-            if self.store.get_ticket(ticket_id)["status"] == "cancelled":
+            if ticket_id and self.store.get_ticket(ticket_id)["status"] == "cancelled":
                 raise _Cancelled(ticket_id)
             if c.refused:
                 return {"action": "escalate", "kind": "refusal", "reason": f"model refusal ({c.refusal_category})"}

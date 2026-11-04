@@ -53,8 +53,9 @@ def test_actions_validate_state(store):
     assert actions.answer(store, q, "$10", "human")["status"] == "in_progress"
     assert actions.retry(store, e, "use the 2020 data", "human")["status"] == "in_progress"
     assert "use the 2020 data" in store.get_ticket(e)["context"]
+    assert actions.cancel(store, e, "", "human")["status"] == "cancelled"      # running work can be cancelled
     with pytest.raises(Exception, match="nothing to cancel"):
-        actions.cancel(store, e, "", "human")
+        actions.cancel(store, e, "", "human")                                    # but not twice
 
 
 def test_retrying_a_worker_reopens_its_escalated_parent_but_not_a_finished_one(store):
