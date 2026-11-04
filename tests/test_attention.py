@@ -192,8 +192,11 @@ def test_dashboard_answer_cancel_errors_and_no_double_launch(store, tmp_path):
 def test_dashboard_state_has_why_level_and_run_flag(store, tmp_path):
     e = escalated(store, note="sensor offline")
     q = asking(store, "what rate?")
+    store.handoff(e, "top_manager", "sensor is offline; only you can power-cycle it")
+    store.handoff(q, "top_manager")
     s = TestClient(create_app(tmp_path / "orchestrator.db", load_config(None), project=tmp_path),
                    base_url="http://127.0.0.1").get("/api/state").json()
     by = {n["id"]: n for n in s["needs_human"]}
-    assert by[e]["why"] == "sensor offline" and by[e]["level"] == "top"
+    assert "power-cycle" in by[e]["why"] and by[e]["level"] == "top" and by[e]["route"] == "human"
     assert by[q]["detail"] == "what rate?" and s["run_active"] is False
+    assert s["handling"] == []

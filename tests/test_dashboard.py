@@ -30,7 +30,7 @@ def test_state_and_html(store, tmp_path):
     store.transition(child["id"], "in_progress", "worker:x")
     esc = mk(store, title="Unsafe thing")
     store.transition(esc["id"], "in_progress", "research_manager")
-    store.transition(esc["id"], "escalated", "research_manager", note="safety")
+    store.escalate(esc["id"], "research_manager", "safety", kind="safety")      # safety goes straight to the human
     store.register_resource("scope", "stop between sweeps")
     store.add_event(None, "w", "usage", {"input_tokens": 10, "output_tokens": 5})
 

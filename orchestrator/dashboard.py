@@ -47,14 +47,17 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
                    c.execute("SELECT type, payload FROM events WHERE ticket_id=? ORDER BY seq", (ticket_id,))]
             return actions.why_from_events(evs)
 
-        needs_human = [
-            {"id": t["id"], "title": t["title"], "status": t["status"], "assignee": t["assignee"],
-             "level": "top" if t["parent_id"] is None else "worker",
-             "detail": next((q["question"] for q in t["questions"] if "answer" not in q), ""),
-             "why": why(t["id"])}
-            for t in tickets
-            if t["status"] == "escalated" or (t["status"] == "needs_clarification" and t["parent_id"] is None)
-        ]
+        def item(t: dict[str, Any]) -> dict[str, Any]:
+            return {"id": t["id"], "title": t["title"], "status": t["status"], "assignee": t["assignee"],
+                    "level": "top" if t["parent_id"] is None else "worker", "route": actions.route_of(t),
+                    "detail": next((q["question"] for q in t["questions"] if "answer" not in q), ""),
+                    "why": why(t["id"])}
+
+        # Only what reached the human: safety/refusals by policy, or handed off by the top manager.
+        # Everything else is still being handled by a manager or the top manager.
+        attention = [item(t) for t in tickets if actions.route_of(t)]
+        needs_human = [i for i in attention if i["route"] == "human"]
+        handling = [i for i in attention if i["route"] != "human"]
 
         # 2. org tree: managers (top-level assignees) and every worker under their unfinished tickets
         #    (any worker status, so finished ones stay visible while the parent ticket is still open),
@@ -93,7 +96,7 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
         events = [{**dict(r), "payload": json.loads(r["payload"])} for r in c.execute(
             "SELECT * FROM events WHERE type != 'usage' ORDER BY seq DESC LIMIT ?", (event_limit,))]
 
-        return {"needs_human": needs_human, "org": org, "by_status": by_status, "board": board,
+        return {"needs_human": needs_human, "handling": handling, "org": org, "by_status": by_status, "board": board,
                 "resources": resources, "jobs": jobs, "spend": spend, "events": events}
     finally:
         c.close()
@@ -129,10 +132,16 @@ def seed_demo(db_path: str | Path) -> None:
     risky = st.create_ticket({**base, "title": "Sweep heater power", "assignee": "experiment_manager",
                               "rigor": "rigorous"}, "top_manager")
     st.transition(risky["id"], "in_progress", "experiment_manager")
-    st.transition(risky["id"], "escalated", "experiment_manager", note="temperature rising faster than expected")
+    st.escalate(risky["id"], "experiment_manager", "temperature rising faster than expected", kind="safety")
     q = st.create_ticket({**base, "title": "Pick sampling rate", "assignee": "research_manager"}, "top_manager")
     st.transition(q["id"], "in_progress", "research_manager")
     st.ask_question(q["id"], "research_manager", "What sampling rate does the sensor support?")
+    st.handoff(q["id"], "top_manager", "I do not know the sensor's rate; only you do")
+    stuck = st.create_ticket({**base, "title": "Read mpremote docs", "assignee": "worker:tool_scout-4",
+                              "worker_role": "tool_scout"}, "tooling_manager", parent_id=tool["id"])
+    st.transition(stuck["id"], "in_progress", "worker:tool_scout-4")
+    st.escalate(stuck["id"], "worker:tool_scout-4", "could not obtain a valid reply within retry limit",
+                kind="technical")
     st.register_resource("thermal-rig", "stop between sweep points")
     st.register_resource("scope-1")
     st.claim_resource("thermal-rig", risky["id"], "20m", actor="worker:runner")

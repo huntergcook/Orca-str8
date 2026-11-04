@@ -8,7 +8,7 @@ files and SQLite, so a fresh session can resume with `resume`.
     python -m orchestrator.ctl [--config PATH] <command> [args]      (JSON on stdout)
 
 Commands: resume | board | ticket ID | create [--file F | stdin JSON] | run | watch | answer ID TEXT |
-          retry ID [TEXT] | cancel ID [TEXT] | state [--set (stdin)] | log TEXT | finish SUMMARY | pause | unpause
+          retry ID [TEXT] | cancel ID [TEXT] | handoff ID [TEXT] | state [--set (stdin)] | log TEXT | finish SUMMARY | pause | unpause
 """
 from __future__ import annotations
 
@@ -64,13 +64,19 @@ class Ctl:
     def board(self) -> dict[str, Any]:
         top_level = [t for t in self.store.list_tickets() if t["parent_id"] is None]
         rows = [self._row(t) for t in top_level]
-        attention = []
+        attention, handled_below = [], []
         for t in self.store.list_tickets():
-            if t["status"] in ("escalated", "needs_clarification"):
-                attention.append({**self._row(t), "level": "top" if t["parent_id"] is None else "worker",
-                                  "why": actions.why_from_events(self.store.events(t["id"]))})
-        return {"tickets": rows, "needs_attention": attention, "halted": self._halt_reason(),
-                "run_active": self.run_active()}
+            route = actions.route_of(t)
+            if route is None:
+                continue
+            item = {**self._row(t), "level": "top" if t["parent_id"] is None else "worker", "route": route,
+                    "why": actions.why_from_events(self.store.events(t["id"]))}
+            # needs_attention is only what the department managers could not handle (or what is the
+            # human's call by policy). Worker problems are the managers' to fix and are listed separately.
+            (handled_below if route == "manager" else attention).append(item)
+        return {"tickets": rows, "needs_attention": attention,
+                "managers_handling": [{k: i[k] for k in ("id", "title", "status", "why")} for i in handled_below],
+                "halted": self._halt_reason(), "run_active": self.run_active()}
 
     def ticket(self, ticket_id: str) -> dict[str, Any]:
         t = self.store.get_ticket(ticket_id)
@@ -176,6 +182,10 @@ class Ctl:
         """Send an escalated ticket back to work (guidance is appended to its context)."""
         return actions.retry(self.store, ticket_id, text, "top_manager")
 
+    def handoff(self, ticket_id: str, text: str = "") -> dict[str, Any]:
+        """Only for what you (the top manager) could not resolve: put it in front of the human."""
+        return actions.handoff(self.store, ticket_id, text, "top_manager")
+
     def cancel(self, ticket_id: str, text: str = "") -> dict[str, Any]:
         return actions.cancel(self.store, ticket_id, text, "top_manager")
 
@@ -254,7 +264,7 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
     p = sub.add_parser("answer")
     p.add_argument("id")
     p.add_argument("text")
-    for name in ("retry", "cancel"):
+    for name in ("retry", "cancel", "handoff"):
         p = sub.add_parser(name)
         p.add_argument("id")
         p.add_argument("text", nargs="?", default="")
@@ -280,7 +290,7 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
             out = ctl.create(json.loads(raw))
         elif a.cmd == "state":
             out = ctl.state(sys.stdin.read() if a.set else None)
-        elif a.cmd in ("answer", "retry", "cancel"):
+        elif a.cmd in ("answer", "retry", "cancel", "handoff"):
             out = getattr(ctl, a.cmd)(a.id, a.text)
         elif a.cmd == "watch":
             out = ctl.watch(a.timeout, a.grace)

@@ -21,6 +21,17 @@ SCHEMA_PATH = Path(__file__).resolve().parents[1] / "schemas" / "ticket.schema.j
 
 TERMINAL = {"done", "failed", "cancelled"}
 
+# Escalation chain: worker -> department manager -> top manager -> human.
+# Safety issues and model refusals are the human's decision by policy, so they skip the chain.
+HUMAN_ONLY_KINDS = {"safety", "refusal"}
+
+
+def route_for(ticket: dict, kind: str = "blocked") -> str:
+    """Who must handle a newly escalated ticket: 'manager', 'top_manager' or 'human'."""
+    if kind in HUMAN_ONLY_KINDS:
+        return "human"
+    return "manager" if ticket.get("parent_id") else "top_manager"
+
 TRANSITIONS: dict[str, set[str]] = {
     "open": {"in_progress", "blocked", "escalated", "cancelled"},
     "in_progress": {"needs_clarification", "blocked", "escalated", "done", "failed", "cancelled"},
@@ -240,6 +251,8 @@ class Store:
             if new_status not in TRANSITIONS.get(old, set()):
                 raise InvalidTransition(f"{ticket_id}: {old} -> {new_status}")
             t["status"] = new_status
+            if new_status in ("in_progress", "done", "failed", "cancelled"):
+                t.pop("escalation", None)
             if result is not None:
                 t["result"] = result
             self._save(c, t)
@@ -273,6 +286,38 @@ class Store:
             self._event(c, ticket_id, actor, "assigned", {"from": old, "to": assignee})
             return t
 
+    def escalate(self, ticket_id: str, actor: str, reason: str, kind: str = "blocked",
+                 to: str | None = None) -> dict[str, Any]:
+        """Escalate a ticket and record who must handle it (see route_for). Kinds: blocked, technical,
+        safety, refusal. Safety and refusal go straight to the human."""
+        with self._tx() as c:
+            t = self._load(c, ticket_id)
+            old = t["status"]
+            if "escalated" not in TRANSITIONS.get(old, set()):
+                raise InvalidTransition(f"{ticket_id}: {old} -> escalated")
+            to = to or route_for(t, kind)
+            t["status"] = "escalated"
+            t["escalation"] = {"to": to, "kind": kind, "reason": reason}
+            self._save(c, t)
+            self._event(c, ticket_id, actor, "status_changed",
+                        {"from": old, "to": "escalated", "note": reason, "escalated_to": to, "kind": kind})
+            return t
+
+    def handoff(self, ticket_id: str, actor: str, reason: str = "") -> dict[str, Any]:
+        """The level above could not resolve this: hand it to the human."""
+        with self._tx() as c:
+            t = self._load(c, ticket_id)
+            if t["status"] not in ("escalated", "needs_clarification"):
+                raise InvalidTransition(f"{ticket_id}: nothing to hand off ({t['status']})")
+            esc = dict(t.get("escalation") or {"kind": "blocked", "reason": ""})
+            esc.update(to="human", handed_off_by=actor)
+            if reason:
+                esc["reason"] = reason
+            t["escalation"] = esc
+            self._save(c, t)
+            self._event(c, ticket_id, actor, "handoff", {"to": "human", "reason": reason})
+            return t
+
     def ask_question(self, ticket_id: str, asked_by: str, question: str) -> dict[str, Any]:
         """A worker asks upward; the ticket moves to needs_clarification."""
         with self._tx() as c:
@@ -281,6 +326,8 @@ class Store:
                 raise InvalidTransition(f"{ticket_id}: cannot ask from {t['status']}")
             t["questions"].append({"asked_by": asked_by, "question": question})
             t["status"] = "needs_clarification"
+            # a worker's question goes to its manager; a manager's goes to the top manager
+            t["escalation"] = {"to": route_for(t, "question"), "kind": "question", "reason": question}
             self._save(c, t)
             self._event(c, ticket_id, asked_by, "question_asked", {"question": question})
             return t
@@ -295,6 +342,7 @@ class Store:
             pending[0].update(answered_by=answered_by, answer=answer)
             if len(pending) == 1 and t["status"] == "needs_clarification":
                 t["status"] = "in_progress"
+                t.pop("escalation", None)
             self._save(c, t)
             self._event(c, ticket_id, answered_by, "question_answered", {"answer": answer})
             return t

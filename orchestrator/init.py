@@ -26,7 +26,7 @@ models:
   top:     {{ provider: external, model: claude-code }}   # played by your Claude Code session (/orchestrate)
   manager: {{ provider: deepseek, model: deepseek-v4-pro }}
   worker:  {{ provider: deepseek, model: deepseek-flash }}
-  fallback_chain: []
+  fallback_chain: [{{ provider: deepseek, model: deepseek-v4-pro }}]   # tried when a worker's reply fails
 
 budget:                      # safety net; remove or raise once you trust a run
   max_tokens: 400000

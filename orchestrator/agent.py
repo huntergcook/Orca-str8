@@ -18,7 +18,9 @@ PROTOCOL = """\
 Work only on the ticket below; stay inside its scope. Reply with exactly one JSON object:
   {"action": "done", "result": <shaped as the ticket's return_spec>}
   {"action": "ask", "question": "<what you need answered>"}
-  {"action": "escalate", "reason": "<safety issue or out-of-scope problem>"}
+  {"action": "escalate", "kind": "safety" | "blocked", "reason": "<what is wrong>"}
+      ("safety": anything physically or otherwise unsafe; goes straight to the human. "blocked": you cannot
+       finish and need your manager's help, which is the normal case.)
   {"action": "fail", "reason": "<why it cannot be done>"}
 Keep the JSON reply SMALL. Put long content (reports, notes, data, code) in a file with write_file and
 return only a short summary and the file path in "result". Never put a long document inside the JSON.
@@ -123,8 +125,8 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
             if refusals >= 2:
                 store.add_event(ticket_id, actor, "refusal_escalated",
                                 {"category": c.refusal_category, "model": c.model})
-                return store.transition(ticket_id, "escalated", actor,
-                                        note=f"model refusal ({c.refusal_category}); needs human decision")
+                return store.escalate(ticket_id, actor, f"model refusal ({c.refusal_category}); needs human decision",
+                                      kind="refusal")
             store.add_event(ticket_id, actor, "refusal", {"category": c.refusal_category, "model": c.model})
             messages = messages[:1] + [{"role": "user", "content": _restated(t)}]
             continue
@@ -163,10 +165,10 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
         if action == "ask":
             return store.ask_question(ticket_id, actor, str(reply.get("question", "")))
         if action == "escalate":
-            return store.transition(ticket_id, "escalated", actor, note=str(reply.get("reason", "")))
+            kind = reply.get("kind") if reply.get("kind") in ("safety", "blocked") else "blocked"
+            return store.escalate(ticket_id, actor, str(reply.get("reason", "")), kind=kind)
         if action == "fail":
             return store.transition(ticket_id, "failed", actor, note=str(reply.get("reason", "")))
         break
 
-    return store.transition(ticket_id, "escalated", actor,
-                            note="could not obtain a valid reply within retry limit")
+    return store.escalate(ticket_id, actor, "could not obtain a valid reply within retry limit", kind="technical")

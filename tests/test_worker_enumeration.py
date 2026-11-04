@@ -36,8 +36,9 @@ def test_dashboard_lists_all_workers_of_open_tickets_including_finished(tmp_path
     seed_demo(tmp_path / "d.db")
     s = build_state(tmp_path / "d.db", load_config(None))
     scouts = s["org"]["tooling_manager"]
-    assert [w["worker"] for w in scouts] == ["worker:tool_scout-1", "worker:tool_scout-2", "worker:tool_scout-3"]
-    assert [w["status"] for w in scouts] == ["in_progress", "in_progress", "done"]   # finished one stays visible
+    assert [w["worker"] for w in scouts] == ["worker:tool_scout-1", "worker:tool_scout-2", "worker:tool_scout-3",
+                                                   "worker:tool_scout-4"]
+    assert [w["status"] for w in scouts] == ["in_progress", "in_progress", "done", "escalated"]   # finished one stays visible
     assert all(w["role"] == "tool_scout" and w["ticket"] for w in scouts)
     # workers under a finished top-level ticket are hidden once nothing about them is active
     assert s["org"]["research_manager"] == []

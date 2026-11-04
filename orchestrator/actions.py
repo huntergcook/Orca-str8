@@ -21,10 +21,25 @@ CANCELLABLE = ("escalated", "needs_clarification", "blocked")
 FINISHED = ("done", "failed", "cancelled")
 
 
+def route_of(ticket: dict[str, Any]) -> str | None:
+    """Who must handle a ticket that needs attention: 'manager', 'top_manager' or 'human'.
+    None if it needs nobody. Tickets escalated before routing existed are derived from their level."""
+    if ticket["status"] not in ("escalated", "needs_clarification"):
+        return None
+    to = (ticket.get("escalation") or {}).get("to")
+    return to or ("manager" if ticket.get("parent_id") else "top_manager")
+
+
+def retries_used(store: Store, ticket_id: str) -> int:
+    return sum(1 for e in store.events(ticket_id) if e["type"] == "retry")
+
+
 def why_from_events(events: list[dict[str, Any]]) -> str:
     """One-line reason a ticket needs attention, from its events (payloads already decoded)."""
     for e in reversed(events):
         p = e.get("payload") or {}
+        if e["type"] == "handoff" and p.get("reason"):      # the top manager's explanation to the human
+            return str(p["reason"])
         if e["type"] == "run_error":
             return str(p.get("error", ""))
         if e["type"] == "refusal_escalated":
@@ -93,6 +108,7 @@ def retry(store: Store, ticket_id: str, text: str, actor: str) -> dict[str, Any]
     if text.strip():
         store.append_context(ticket_id, actor, text.strip())
     t = store.transition(ticket_id, "in_progress", actor, note="retry with guidance" if text.strip() else "retry")
+    store.add_event(ticket_id, actor, "retry", {"guidance": text.strip()[:500]})
     return {"ticket_id": ticket_id, "status": t["status"]}
 
 
@@ -104,4 +120,10 @@ def cancel(store: Store, ticket_id: str, text: str, actor: str) -> dict[str, Any
     return {"ticket_id": ticket_id, "status": t["status"]}
 
 
-ACTIONS = {"answer": answer, "retry": retry, "cancel": cancel}
+def handoff(store: Store, ticket_id: str, text: str, actor: str) -> dict[str, Any]:
+    """The level above could not resolve this: put it in front of the human."""
+    t = store.handoff(ticket_id, actor, text.strip())
+    return {"ticket_id": ticket_id, "status": t["status"], "route": "human"}
+
+
+ACTIONS = {"answer": answer, "retry": retry, "cancel": cancel}      # what the dashboard may do

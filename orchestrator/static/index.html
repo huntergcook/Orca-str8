@@ -33,6 +33,7 @@
 <main>
   <h1>Orchestrator <span id="stamp" class="mut"></span></h1>
   <section class="need" id="need-sec" hidden><h2>Needs human</h2><div id="need"></div></section>
+  <section id="handling-sec" hidden><details><summary><b>Being handled below you</b> <span class="mut" id="hn"></span></summary><div id="handling"></div></details></section>
   <div class="grid">
     <section><h2>Org</h2><div id="org"></div></section>
     <section><h2>Hardware</h2><div id="hw"></div></section>
@@ -87,6 +88,11 @@ $("need").addEventListener("click", async e => {
 });
 function render(s) {
   renderNeed(s.needs_human);
+  $("handling-sec").hidden = !s.handling.length;
+  $("hn").textContent = s.handling.length + " item" + (s.handling.length === 1 ? "" : "s") + " your managers are working on";
+  $("handling").innerHTML = rows(s.handling, n => `<div class="item"><b>${esc(n.title)}</b> <code>${esc(n.id)}</code> ` +
+    `<span class="pill">${esc(n.status)}</span> <span class="mut">with ${n.route === "manager" ? "its department manager" : "the top manager"}</span>` +
+    `<div class="mut">${esc(n.why || n.detail)}</div></div>`);
   const org = Object.entries(s.org);
   $("org").innerHTML = org.length ? rows(org, ([m, ws]) =>
     `<details open><summary><b>${esc(m)}</b> <span class="mut">${workerSummary(ws)}</span></summary><ul>` +

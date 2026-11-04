@@ -13,7 +13,8 @@ from typing import Any
 from .agent import parse_reply, run_ticket, ticket_prompt
 from .memory import Memory
 from .providers import Provider
-from .store import Store
+from .store import Store, StoreError
+from . import actions
 from .hardware import JobRunner, hardware_brief
 from .tools import ToolBox
 from .verification import Verifier
@@ -30,9 +31,19 @@ Reply with exactly one JSON object:
    "override_reason": "..."}                                # only if finishing despite verification concerns
   {"action": "answer", "answer": "..."}                    # only when answering a worker's question
   {"action": "ask", "question": "..."}                     # you need clarification from above
-  {"action": "escalate", "reason": "..."}                  # safety issue or something above your authority
+  {"action": "retry_workers", "notes": "...", "retries": [{"ticket_id": "<escalated worker ticket>",
+      "guidance": "what to do differently this time"}]}
+  {"action": "escalate", "kind": "safety" | "blocked", "reason": "..."}
   {"action": "fail", "reason": "..."}
-Keep each worker ticket narrow. Match effort to the ticket's rigor."""
+Keep each worker ticket narrow. Match effort to the ticket's rigor.
+
+YOU OWN WORKER PROBLEMS. When a worker ticket is [escalated] or [failed], read its reason and the sample of its
+last bad reply, then fix it yourself: retry_workers with specific guidance (a retry automatically uses the next
+fallback model; each worker has a limited number of retries), delegate a differently-scoped replacement, or
+accept the gap and finish. Typical fixes: tell it to save long content to a file and reply briefly, narrow its
+scope, or give it the missing information. Use "escalate" only for what you truly cannot resolve (it goes to the
+top manager, and only from there possibly to the human). Use kind "safety" only for real safety concerns, which go
+straight to the human."""
 
 
 def load_role(name: str, default: str = "") -> str:
@@ -74,7 +85,7 @@ class Manager:
             self.store.add_event(None, self.name, "usage", {
                 "model": c.model, "input_tokens": c.input_tokens, "output_tokens": c.output_tokens})
             if c.refused:
-                return {"action": "escalate", "reason": f"model refusal ({c.refusal_category})"}
+                return {"action": "escalate", "kind": "refusal", "reason": f"model refusal ({c.refusal_category})"}
             reply = parse_reply(c.text)
             if reply:
                 return reply
@@ -83,11 +94,49 @@ class Manager:
         return None
 
     def _children_summary(self, ticket_id: str) -> str:
+        """One entry per worker. Failed or escalated workers include why, a sample of their last bad
+        reply, and how many retries they have used, so the manager can actually diagnose and fix them."""
+        max_retries = self.cfg["policies"]["max_worker_retries"]
         lines = []
         for ch in self.store.list_tickets(parent_id=ticket_id):
             res = json.dumps(ch["result"]) if ch["result"] is not None else "-"
-            lines.append(f"- [{ch['status']}] {ch['id']} {ch['title']} -> {res}")
+            line = f"- [{ch['status']}] {ch['id']} {ch['title']} -> {res}"
+            if ch["status"] in ("escalated", "failed"):
+                events = self.store.events(ch["id"])
+                line += f"\n    reason: {actions.why_from_events(events) or '(none recorded)'}"
+                bad = [e for e in events if e["type"] == "invalid_reply"]
+                if bad:
+                    p = bad[-1]["payload"]
+                    line += (f"\n    its last invalid reply ({p['chars']} chars) began: {p['head'][:200]!r}"
+                             f" ... and ended: {p['tail'][-120:]!r}")
+                line += f"\n    retries used: {actions.retries_used(self.store, ch['id'])}/{max_retries}"
+            lines.append(line)
         return "\n".join(lines) or "(no worker tickets)"
+
+    def _close_children(self, ticket_id: str) -> None:
+        """When the manager settles its ticket, workers still escalated are resolved by that decision."""
+        for ch in self.store.list_tickets(parent_id=ticket_id):
+            if ch["status"] == "escalated":
+                self.store.transition(ch["id"], "failed", self.name, note="settled by the manager (not retried)")
+
+    def _retry_workers(self, ticket_id: str, d: dict[str, Any]) -> tuple[int, list[str]]:
+        """Send escalated workers back with guidance. Returns (retries applied, error messages)."""
+        mine = {c["id"]: c for c in self.store.list_tickets(parent_id=ticket_id)}
+        max_retries = self.cfg["policies"]["max_worker_retries"]
+        applied, errors = 0, []
+        for item in d.get("retries") or []:
+            wid = str(item.get("ticket_id", ""))
+            if wid not in mine:
+                errors.append(f"{wid!r} is not one of your workers")
+            elif actions.retries_used(self.store, wid) >= max_retries:
+                errors.append(f"{wid}: retry limit ({max_retries}) reached; delegate different work or give up on it")
+            else:
+                try:
+                    actions.retry(self.store, wid, str(item.get("guidance", "")), self.name)
+                    applied += 1
+                except StoreError as e:
+                    errors.append(f"{wid}: {e}")
+        return applied, errors
 
     def _apply(self, ticket_id: str, d: dict[str, Any]) -> bool:
         """Apply a terminal-ish decision to the parent ticket. Returns True if the ticket is settled."""
@@ -95,11 +144,14 @@ class Manager:
         if d.get("notes"):
             self.memory.append_journal(f"[{ticket_id}] {d['notes']}")
         if a == "done":
+            self._close_children(ticket_id)
             self.store.transition(ticket_id, "done", self.name, result=d.get("result") or {})
         elif a == "fail":
+            self._close_children(ticket_id)
             self.store.transition(ticket_id, "failed", self.name, note=str(d.get("reason", "")))
         elif a == "escalate":
-            self.store.transition(ticket_id, "escalated", self.name, note=str(d.get("reason", "")))
+            kind = d.get("kind") if d.get("kind") in ("safety", "refusal", "blocked", "technical") else "blocked"
+            self.store.escalate(ticket_id, self.name, str(d.get("reason", "")), kind=kind)
         elif a == "ask":
             self.store.ask_question(ticket_id, self.name, str(d.get("question", "")))
         else:
@@ -175,6 +227,9 @@ class Manager:
                     if self.diverse_workers and len(models) > 1:      # spread verifiers across models
                         k = (len(children) - len(open_kids) + i) % len(models)
                         models = models[k:] + models[:k]
+                    else:                                              # each retry moves to the next fallback model
+                        used = actions.retries_used(self.store, c["id"])
+                        models = models[min(used, len(models) - 1):]
                     box = ToolBox(self.workspace, actor=c["assignee"], can_acquire=self.can_acquire_tools,
                                   store=self.store, ticket_id=c["id"], can_use_hardware=self.can_use_hardware,
                                   jobs=self.jobs)
@@ -193,8 +248,9 @@ class Manager:
                         self.store.answer_question(c["id"], self.name, str(d.get("answer", "")))
                     elif d and self._apply(ticket_id, d):
                         return self.store.get_ticket(ticket_id)  # asked/escalated upward instead
-                    else:
-                        self.store.transition(c["id"], "escalated", self.name, note="manager could not answer")
+                    else:     # the manager is the one stuck, so this goes to the top manager
+                        self.store.escalate(c["id"], self.name, "manager could not answer the worker's question",
+                                            kind="blocked", to="top_manager")
                 continue
 
             # 3. plan (no children yet) or review (all children settled)
@@ -204,7 +260,17 @@ class Manager:
                 d = self._decide(f"# Your ticket\n{ticket_prompt(t)}\n\n# Worker results\n"
                                  f"{self._children_summary(ticket_id)}\n\nReview, then finish or delegate follow-ups.")
             if d is None:
-                self.store.transition(ticket_id, "escalated", self.name, note="no valid decision from model")
+                self.store.escalate(ticket_id, self.name, "no valid decision from the manager model", kind="technical")
+                break
+            if d.get("action") == "retry_workers":
+                applied, errors = self._retry_workers(ticket_id, d)
+                self.memory.append_journal(f"[{ticket_id}] retried {applied} worker(s)"
+                                           + (f"; problems: {'; '.join(errors)}" if errors else "")
+                                           + (f". {d['notes']}" if d.get("notes") else ""))
+                if applied:
+                    continue                  # step 1 re-runs the reopened workers next round
+                self.store.escalate(ticket_id, self.name, "could not retry workers: " + ("; ".join(errors) or "none given"),
+                                    kind="blocked")
                 break
             if d.get("action") == "done":
                 d = self._verify_gate(ticket_id, d)
@@ -214,6 +280,7 @@ class Manager:
                     self.memory.append_journal(f"[{ticket_id}] {d['notes']}")
                 continue
             if not self._apply(ticket_id, d):
-                self.store.transition(ticket_id, "escalated", self.name, note=f"unknown action {d.get('action')}")
+                self.store.escalate(ticket_id, self.name, f"unknown action {d.get('action')!r} from the manager model",
+                                    kind="technical")
             break
         return self.store.get_ticket(ticket_id)

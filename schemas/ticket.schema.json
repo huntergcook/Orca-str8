@@ -65,6 +65,16 @@
     },
     "result": { "type": ["object", "null"], "description": "Filled on completion, shaped by return_spec." },
     "verification_notes": { "type": "array", "items": { "type": "string" } },
+    "escalation": {
+      "type": "object",
+      "description": "Present while the ticket is escalated or waiting on a question: who must handle it.",
+      "properties": {
+        "to": { "enum": ["manager", "top_manager", "human"] },
+        "kind": { "type": "string", "description": "blocked | technical | safety | refusal | question" },
+        "reason": { "type": "string" },
+        "handed_off_by": { "type": "string" }
+      }
+    },
     "created_at": { "type": "string", "format": "date-time" },
     "updated_at": { "type": "string", "format": "date-time" }
   }

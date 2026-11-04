@@ -21,7 +21,7 @@ models:
   #   top:     { provider: anthropic, model: claude-opus-5-5 }
   #   manager: { provider: deepseek,  model: deepseek-v4-pro }
   #   worker:  { provider: deepseek,  model: deepseek-flash }
-  fallback_chain: []   # capability-stuck fallbacks, tried in order. Never used to route around safety refusals.
+  fallback_chain: []   # capability fallbacks, tried in order when a worker's reply fails (e.g. [{provider: deepseek, model: deepseek-v4-pro}]). Never used to route around safety refusals.
 
 budget:
   # Default: no limits. Set any of these to enable.
@@ -34,6 +34,7 @@ policies:
   on_safety_refusal: retry_once_then_escalate_to_human   # never auto-reroute
   max_subworker_depth: 2      # worker -> sub-worker; tune as we learn
   max_children_per_agent: 5
+  max_worker_retries: 2       # manager retries per worker before it must delegate differently or give up
   default_rigor: balanced     # quick_and_dirty | balanced | rigorous
   verification_is_advisory: true
 

@@ -161,7 +161,9 @@ class TopManager:
         visible (Needs human) instead of leaving tickets stuck 'in_progress'."""
         note = f"run error: {type(err).__name__}: {err}"[:500]
         self.store.add_event(ticket_id, actor, "run_error", {"error": note})
-        kids = self.store.list_tickets(parent_id=ticket_id)
-        for t in [*kids, self.store.get_ticket(ticket_id)]:
-            if t["status"] in ("open", "in_progress", "needs_clarification", "blocked"):
-                self.store.transition(t["id"], "escalated", actor, note=note)
+        active = ("open", "in_progress", "needs_clarification", "blocked")
+        for kid in self.store.list_tickets(parent_id=ticket_id):
+            if kid["status"] in active:               # the manager can pick these up again once the run restarts
+                self.store.escalate(kid["id"], actor, note, kind="technical", to="manager")
+        if self.store.get_ticket(ticket_id)["status"] in active:   # a crash is the top manager's to fix
+            self.store.escalate(ticket_id, actor, note, kind="technical", to="top_manager")

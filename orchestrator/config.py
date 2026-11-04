@@ -26,6 +26,7 @@ DEFAULTS: dict[str, Any] = {
         "on_safety_refusal": "retry_once_then_escalate_to_human",
         "max_subworker_depth": 2,
         "max_children_per_agent": 5,
+        "max_worker_retries": 2,       # manager retries per worker before it must delegate differently or give up
         "default_rigor": "balanced",
         "verification_is_advisory": True,
     },

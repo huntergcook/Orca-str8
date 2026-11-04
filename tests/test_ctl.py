@@ -56,10 +56,13 @@ def test_attention_answer_and_retry(tmp_path):
     out = ctl.run()
     att = out["needs_attention"]
     assert att[0]["id"] == tid and att[0]["open_question"] == "human, which budget?" and att[0]["level"] == "top"
+    assert att[0]["route"] == "top_manager"                      # a manager's question goes to the top manager
     assert ctl.answer(tid, "$10")["status"] == "in_progress"
     out = ctl.run()
-    worker = [a for a in out["needs_attention"] if a["level"] == "worker"]
-    assert worker and worker[0]["status"] == "escalated"
+    # the worker's escalation stays with its manager (who reviewed it and asked upward); only the
+    # manager's question reaches the top manager's list
+    assert [a["level"] for a in out["needs_attention"]] == ["top"]
+    assert out["managers_handling"] and out["managers_handling"][0]["status"] == "escalated"
     ctl.close()
 
 
