@@ -7,8 +7,8 @@ files and SQLite, so a fresh session can resume with `resume`.
 
     python -m orchestrator.ctl [--config PATH] <command> [args]      (JSON on stdout)
 
-Commands: resume | board | ticket ID | create [--file F | stdin JSON] | run | answer ID TEXT |
-          retry ID TEXT | state [--set (stdin)] | log TEXT | finish SUMMARY | pause | unpause
+Commands: resume | board | ticket ID | create [--file F | stdin JSON] | run | watch | answer ID TEXT |
+          retry ID [TEXT] | cancel ID [TEXT] | state [--set (stdin)] | log TEXT | finish SUMMARY | pause | unpause
 """
 from __future__ import annotations
 
@@ -16,11 +16,11 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
-import psutil
-
+from . import actions
 from .config import enter_project, load_config, model_chain
 from .hardware import hardware_brief
 from .limits import GuardedProvider, Halted
@@ -67,9 +67,8 @@ class Ctl:
         attention = []
         for t in self.store.list_tickets():
             if t["status"] in ("escalated", "needs_clarification"):
-                ev = [e for e in self.store.events(t["id"]) if e["type"] in ("status_changed", "refusal_escalated")]
                 attention.append({**self._row(t), "level": "top" if t["parent_id"] is None else "worker",
-                                  "why": (ev[-1]["payload"].get("note") or ev[-1]["payload"]) if ev else ""})
+                                  "why": actions.why_from_events(self.store.events(t["id"]))})
         return {"tickets": rows, "needs_attention": attention, "halted": self._halt_reason(),
                 "run_active": self.run_active()}
 
@@ -113,11 +112,7 @@ class Ctl:
 
     def run_active(self) -> bool:
         """True if a `run` process is alive (the lock file holds a live pid)."""
-        try:
-            pid = int(self.lock_path.read_text())
-        except (OSError, ValueError):
-            return False
-        return psutil.pid_exists(pid)
+        return actions.run_is_active(self.workspace)
 
     def missing_keys(self) -> list[str]:
         """API key variables the configured models need but the environment lacks."""
@@ -175,14 +170,53 @@ class Ctl:
         return {"halted": halted, "changed": changed, **after}
 
     def answer(self, ticket_id: str, text: str) -> dict[str, Any]:
-        t = self.store.answer_question(ticket_id, "top_manager", text)
-        return {"ticket_id": ticket_id, "status": t["status"]}
+        return actions.answer(self.store, ticket_id, text, "top_manager")
 
-    def retry(self, ticket_id: str, text: str) -> dict[str, Any]:
-        """Send an escalated ticket back to work with guidance appended to its context."""
-        self.store.append_context(ticket_id, "top_manager", text)
-        t = self.store.transition(ticket_id, "in_progress", "top_manager", note="retry with guidance")
-        return {"ticket_id": ticket_id, "status": t["status"]}
+    def retry(self, ticket_id: str, text: str = "") -> dict[str, Any]:
+        """Send an escalated ticket back to work (guidance is appended to its context)."""
+        return actions.retry(self.store, ticket_id, text, "top_manager")
+
+    def cancel(self, ticket_id: str, text: str = "") -> dict[str, Any]:
+        return actions.cancel(self.store, ticket_id, text, "top_manager")
+
+    # ---------------------------------------------------------------- watch
+
+    def _seen(self) -> set[str]:
+        try:
+            return set(json.loads((self.workspace / "attention_seen.json").read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            return set()
+
+    def watch(self, timeout: float = 600, grace: float = 10, poll: float = 2.0) -> dict[str, Any]:
+        """Block until something needs the human/top manager, then return immediately:
+          attention       new escalation or question (reported once)
+          pending_no_run  work is waiting but no run is active (start `run`)
+          idle            nothing pending and no run active
+          timeout         nothing happened within `timeout` seconds
+        Run it in the background; the session is notified when it exits."""
+        seen = self._seen()
+        start = time.monotonic()
+        no_run_since: float | None = None
+        while True:
+            board = self.board()
+            new = [a for a in board["needs_attention"] if f"{a['id']}:{a['status']}" not in seen]
+            if new:
+                seen |= {f"{a['id']}:{a['status']}" for a in new}
+                (self.workspace / "attention_seen.json").write_text(json.dumps(sorted(seen)), encoding="utf-8")
+                return {"reason": "attention", "new_attention": new, "run_active": board["run_active"],
+                        "still_open": len(board["needs_attention"])}
+            pending = any(t["status"] in ("open", "in_progress") for t in self.store.list_tickets())
+            if board["run_active"]:
+                no_run_since = None
+            else:
+                no_run_since = no_run_since or time.monotonic()
+                if time.monotonic() - no_run_since >= grace:
+                    return {"reason": "pending_no_run" if pending else "idle", "run_active": False,
+                            "still_open": len(board["needs_attention"]), "halted": board["halted"]}
+            if time.monotonic() - start >= timeout:
+                return {"reason": "timeout", "run_active": board["run_active"],
+                        "still_open": len(board["needs_attention"])}
+            time.sleep(poll)
 
     def state(self, set_text: str | None = None) -> dict[str, Any]:
         if set_text is not None:
@@ -217,10 +251,16 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
     sub.add_parser("ticket").add_argument("id")
     c = sub.add_parser("create")
     c.add_argument("--file", help="JSON file (default: read JSON from stdin)")
-    for name in ("answer", "retry"):
+    p = sub.add_parser("answer")
+    p.add_argument("id")
+    p.add_argument("text")
+    for name in ("retry", "cancel"):
         p = sub.add_parser(name)
         p.add_argument("id")
-        p.add_argument("text")
+        p.add_argument("text", nargs="?", default="")
+    w = sub.add_parser("watch")
+    w.add_argument("--timeout", type=float, default=600)
+    w.add_argument("--grace", type=float, default=10)
     s = sub.add_parser("state")
     s.add_argument("--set", action="store_true", help="replace state notes with stdin")
     sub.add_parser("log").add_argument("text")
@@ -240,8 +280,10 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
             out = ctl.create(json.loads(raw))
         elif a.cmd == "state":
             out = ctl.state(sys.stdin.read() if a.set else None)
-        elif a.cmd in ("answer", "retry"):
+        elif a.cmd in ("answer", "retry", "cancel"):
             out = getattr(ctl, a.cmd)(a.id, a.text)
+        elif a.cmd == "watch":
+            out = ctl.watch(a.timeout, a.grace)
         elif a.cmd == "ticket":
             out = ctl.ticket(a.id)
         elif a.cmd == "log":

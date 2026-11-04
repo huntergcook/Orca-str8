@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dash-token" content="__DASH_TOKEN__">
 <title>Orchestrator</title>
 <style>
   :root { --bg:#fff; --fg:#1b1f24; --mut:#667085; --line:#e4e7ec; --card:#f8f9fb; --warn:#b42318; --warnbg:#fef3f2; --ok:#067647; }
@@ -20,6 +21,12 @@
   .done { color:var(--ok); } .escalated,.failed { color:var(--warn); }
   details { margin:2px 0; } ul { margin:4px 0 4px 18px; padding:0; }
   .scroll { max-height:320px; overflow:auto; }
+  .item { padding:8px 0; border-top:1px solid var(--line); } .item:first-child { border-top:0; }
+  .why { margin:4px 0; white-space:pre-wrap; }
+  textarea { width:100%; font:inherit; padding:6px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; }
+  button { font:inherit; padding:4px 12px; border-radius:6px; border:1px solid var(--warn); background:var(--warn); color:#fff; cursor:pointer; }
+  button.sec { background:transparent; color:var(--warn); } button:disabled { opacity:.5; cursor:default; }
+  .btns { margin-top:6px; display:flex; gap:8px; align-items:center; }
 </style>
 </head>
 <body>
@@ -43,10 +50,43 @@ function workerSummary(ws) {
   const c = {}; ws.forEach(w => c[w.status] = (c[w.status] || 0) + 1);
   return ws.length + " worker" + (ws.length > 1 ? "s" : "") + " (" + Object.entries(c).map(([k, v]) => v + " " + k).join(", ") + ")";
 }
+const TOKEN = document.querySelector('meta[name="dash-token"]').content;
+let needSig = "";
+function renderNeed(items) {
+  $("need-sec").hidden = !items.length;
+  document.title = (items.length ? "(" + items.length + ") " : "") + "Orchestrator";
+  const sig = JSON.stringify(items.map(n => [n.id, n.status, n.why, n.detail]));
+  if (sig === needSig) return;                       // unchanged: don't wipe what you're typing
+  const typed = {};
+  document.querySelectorAll("#need textarea").forEach(t => typed[t.dataset.id] = t.value);
+  needSig = sig;
+  $("need").innerHTML = rows(items, n => {
+    const q = n.status === "needs_clarification";
+    return `<div class="item" data-id="${esc(n.id)}"><div><b>${esc(n.title)}</b> <code>${esc(n.id)}</code> ` +
+      `<span class="pill">${esc(n.status)}</span> <span class="mut">${esc(n.level)} · ${esc(String(n.assignee).replace(/^worker:/, ""))}</span></div>` +
+      `<div class="why">${esc(q ? n.detail : n.why) || "(no reason recorded)"}</div>` +
+      `<textarea data-id="${esc(n.id)}" rows="2" placeholder="${q ? "Your answer" : "Guidance for the retry (optional)"}">${esc(typed[n.id] || "")}</textarea>` +
+      `<div class="btns">${q ? '<button data-act="answer">Answer</button>' : '<button data-act="retry">Retry</button>'}` +
+      `<button data-act="cancel" class="sec">Cancel ticket</button><span class="msg"></span></div></div>`;
+  });
+}
+$("need").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const item = b.closest(".item"), msg = item.querySelector(".msg");
+  b.disabled = true; msg.textContent = "working...";
+  try {
+    const r = await fetch("/api/action", { method: "POST",
+      headers: { "Content-Type": "application/json", "X-Dashboard-Token": TOKEN },
+      body: JSON.stringify({ action: b.dataset.act, ticket_id: item.dataset.id, text: item.querySelector("textarea").value }) });
+    const j = await r.json();
+    if (!r.ok) { msg.textContent = j.error || ("error " + r.status); b.disabled = false; return; }
+    msg.textContent = j.run_started ? "done; run restarted" : "done";
+    needSig = ""; tick();
+  } catch (err) { msg.textContent = "failed: " + err; b.disabled = false; }
+});
 function render(s) {
-  $("need-sec").hidden = !s.needs_human.length;
-  $("need").innerHTML = rows(s.needs_human, n =>
-    `<div><b>${esc(n.title)}</b> <code>${esc(n.id)}</code> <span class="pill">${esc(n.status)}</span> ${esc(n.assignee)}<div class="mut">${esc(n.detail)}</div></div>`);
+  renderNeed(s.needs_human);
   const org = Object.entries(s.org);
   $("org").innerHTML = org.length ? rows(org, ([m, ws]) =>
     `<details open><summary><b>${esc(m)}</b> <span class="mut">${workerSummary(ws)}</span></summary><ul>` +
@@ -63,7 +103,7 @@ function render(s) {
     rows(s.board, t => `<tr><td><code>${esc(t.id)}</code></td><td>${esc(t.title)}</td><td class="${esc(t.status)}">${esc(t.status)}</td><td>${esc(t.assignee)}</td><td class="mut">${esc(t.rigor)}</td><td class="mut">${esc(t.trace.join(" > "))}</td></tr>`) + `</table>` : "";
   $("events").innerHTML = `<table>` + rows(s.events, e =>
     `<tr><td class="mut">${esc(e.ts.slice(11, 19))}</td><td>${esc(e.actor)}</td><td>${esc(e.type)}</td><td class="mut">${esc(e.ticket_id ?? "")} ${esc(JSON.stringify(e.payload))}</td></tr>`) + `</table>`;
-  $("stamp").textContent = "updated " + new Date().toLocaleTimeString();
+  $("stamp").textContent = "updated " + new Date().toLocaleTimeString() + (s.run_active ? " · run active" : " · no run active");
 }
 async function tick() {
   try { render(await (await fetch("/api/state")).json()); }

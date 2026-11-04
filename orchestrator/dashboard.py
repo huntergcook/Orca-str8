@@ -1,5 +1,7 @@
-"""Read-only dashboard: FastAPI + one static page. Reads the SQLite store via a
-read-only connection; it can never modify orchestrator state.
+"""Dashboard: FastAPI + one static page. State is read through a read-only SQLite connection.
+The only way it changes anything is POST /api/action (answer / retry / cancel a ticket that needs
+attention), which is guarded by a per-start secret token embedded in the page it serves plus a
+localhost Host check, and the server binds to 127.0.0.1 only.
 
     python -m orchestrator.dashboard [--db PATH] [--config PATH] [--port 8080]
 """
@@ -7,14 +9,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import sqlite3
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
 
+from . import actions
 from .config import enter_project, load_config
+from .store import Store, StoreError
 
 STATIC = Path(__file__).parent / "static" / "index.html"
 ACTIVE = ("in_progress", "needs_clarification", "blocked", "escalated")
@@ -36,9 +42,16 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
             by_status[t["status"]] = by_status.get(t["status"], 0) + 1
 
         # 1. needs human: escalations, plus questions asked upward from top-level tickets
+        def why(ticket_id: str) -> str:
+            evs = [{"type": r["type"], "payload": json.loads(r["payload"])} for r in
+                   c.execute("SELECT type, payload FROM events WHERE ticket_id=? ORDER BY seq", (ticket_id,))]
+            return actions.why_from_events(evs)
+
         needs_human = [
             {"id": t["id"], "title": t["title"], "status": t["status"], "assignee": t["assignee"],
-             "detail": next((q["question"] for q in t["questions"] if "answer" not in q), "")}
+             "level": "top" if t["parent_id"] is None else "worker",
+             "detail": next((q["question"] for q in t["questions"] if "answer" not in q), ""),
+             "why": why(t["id"])}
             for t in tickets
             if t["status"] == "escalated" or (t["status"] == "needs_clarification" and t["parent_id"] is None)
         ]
@@ -129,17 +142,57 @@ def seed_demo(db_path: str | Path) -> None:
     st.close()
 
 
-def create_app(db_path: str | Path, cfg: dict[str, Any] | None = None) -> FastAPI:
+class ActionIn(BaseModel):
+    action: str
+    ticket_id: str
+    text: str = ""
+
+
+def create_app(db_path: str | Path, cfg: dict[str, Any] | None = None, launch_run: Any = None,
+               project: str | Path | None = None, token: str | None = None) -> FastAPI:
     cfg = cfg or load_config(None)
+    token = token or secrets.token_urlsafe(24)
+    project = Path(project) if project else Path.cwd()
+    workspace = Path(db_path).resolve().parent
+    launch = launch_run or (lambda: actions.spawn_run(project, workspace))
     app = FastAPI(title="Orchestrator dashboard", docs_url=None, redoc_url=None)
+    app.state.token = token
 
     @app.get("/api/state")
     def state() -> dict[str, Any]:
-        return build_state(db_path, cfg)
+        out = build_state(db_path, cfg)
+        out["run_active"] = actions.run_is_active(workspace)
+        return out
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        return STATIC.read_text(encoding="utf-8")
+        return STATIC.read_text(encoding="utf-8").replace("__DASH_TOKEN__", token)
+
+    @app.post("/api/action")
+    def act(body: ActionIn, request: Request) -> JSONResponse:
+        host = (request.headers.get("host") or "").split(":")[0]
+        if host not in ("127.0.0.1", "localhost"):
+            return JSONResponse({"error": "bad host"}, status_code=403)
+        if not secrets.compare_digest(request.headers.get("x-dashboard-token", ""), token):
+            return JSONResponse({"error": "bad or missing token; reload the page"}, status_code=403)
+        fn = actions.ACTIONS.get(body.action)
+        if fn is None:
+            return JSONResponse({"error": f"unknown action {body.action!r}"}, status_code=400)
+        store = Store(db_path)
+        try:
+            result = fn(store, body.ticket_id, body.text, "human")
+        except StoreError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        finally:
+            store.close()
+        started = False
+        if body.action in ("answer", "retry") and not actions.run_is_active(workspace):
+            try:
+                launch()                      # pick the work back up without waiting for anyone
+                started = True
+            except OSError as e:
+                result["warning"] = f"could not start a run: {e}"
+        return JSONResponse({**result, "run_started": started})
 
     return app
 
@@ -172,7 +225,7 @@ def main() -> None:
         import webbrowser
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     try:
-        uvicorn.run(create_app(db, cfg), host="127.0.0.1", port=port, log_level="warning")
+        uvicorn.run(create_app(db, cfg, project=Path.cwd()), host="127.0.0.1", port=port, log_level="warning")
     except KeyboardInterrupt:
         pass
     except OSError as e:
