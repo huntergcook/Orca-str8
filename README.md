@@ -200,7 +200,7 @@ Run these from your project folder (or add `--project PATH`). Your agent runs mo
 | `ctl create --file t.json` | Create a ticket for a department |
 | `ctl run` | Run the department managers (long; run it in the background) |
 | `ctl watch` | Block until something needs attention or work finishes, then return |
-| `ctl answer ID "text"` / `ctl retry ID ["guidance"]` / `ctl cancel ID` | Resolve what needs attention |
+| `ctl answer ID "text"` / `ctl retry ID ["guidance"]` / `ctl cancel ID` | Resolve what needs attention; cancel also stops running work and everything below it |
 | `ctl handoff ID "why"` | The top manager could not resolve it; put it in front of the human |
 | `ctl state --set` / `ctl log "..."` / `ctl human "..."` | Durable notes: plan, journal, and everything you said |
 | `ctl recover` / `ctl release-resource NAME "..."` | Recover after a crash; free hardware after you checked it |
@@ -208,6 +208,7 @@ Run these from your project folder (or add `--project PATH`). Your agent runs mo
 | `ctl code integration` / `release` / `sync` | See what the Software manager integrated, release it into your main branch, or bring main's new commits into integration |
 | `ctl code list` / `show ID` / `accept ID` / `reject ID "feedback"` / `discard ID` | Review branches yourself (when `code.review: top_manager`, or to override) |
 | `ctl models ...` | See and choose models (above) |
+| `ctl set-models ID --manager M --worker M` | The top manager picks models for one ticket and its subtree (e.g. cheap by default, stronger for a hard or failing ticket); `default` clears |
 | `ctl pause` / `ctl unpause` | Halt or resume all model calls (also: create a file `workspace/PAUSE`) |
 | `ctl finish "summary"` | Mark the project done |
 

@@ -403,6 +403,34 @@ class Store:
             self._event(c, ticket_id, actor, "context_appended", {"text": text})
             return t
 
+    def set_models(self, ticket_id: str, actor: str, models: dict[str, str | None]) -> dict[str, Any]:
+        """Choose models for a ticket and its subtree ({"manager": ..., "worker": ...}; None removes a choice)."""
+        with self._tx() as c:
+            t = self._load(c, ticket_id)
+            cur = dict(t.get("models") or {})
+            for tier, m in models.items():
+                if tier not in ("manager", "worker"):
+                    raise StoreError(f"unknown model tier {tier!r}: use manager or worker")
+                if m:
+                    cur[tier] = str(m)
+                else:
+                    cur.pop(tier, None)
+            t["models"] = cur
+            self._save(c, t)
+            self._event(c, ticket_id, actor, "models_set", {"models": cur})
+            return t
+
+    def chosen_model(self, ticket_id: str | None, tier: str) -> str | None:
+        """The model chosen for `tier` on this ticket or the nearest ancestor that chose one."""
+        seen = 0
+        while ticket_id and seen < 50:
+            t = self.get_ticket(ticket_id)
+            m = (t.get("models") or {}).get(tier)
+            if m:
+                return m
+            ticket_id, seen = t.get("parent_id"), seen + 1
+        return None
+
     def add_verification(self, ticket_id: str, actor: str, verdict: str, notes: list[str]) -> dict[str, Any]:
         """Attach advisory verification notes to a ticket and log the verdict."""
         with self._tx() as c:

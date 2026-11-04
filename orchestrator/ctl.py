@@ -200,6 +200,19 @@ class Ctl:
         """Send an escalated ticket back to work (guidance is appended to its context)."""
         return actions.retry(self.store, ticket_id, text, "top_manager")
 
+    def set_models(self, ticket_id: str, manager: str | None = None, worker: str | None = None) -> dict[str, Any]:
+        """The top manager picks models per ticket (it applies to everything below it): e.g. the cheap model by
+        default and a stronger one for a hard or repeatedly failing ticket. 'default' removes a choice."""
+        known = set(self._models_in_use()) | set(self.cfg.get("prices") or {})
+        for m in (manager, worker):
+            if m and m != "default" and m not in known:
+                raise StoreError(f"unknown model {m!r}; configured models: {sorted(known)}")
+        changes = {k: (None if v == "default" else v) for k, v in (("manager", manager), ("worker", worker)) if v}
+        if not changes:
+            raise StoreError("give --manager and/or --worker (a model name, or 'default' to use the config)")
+        t = self.store.set_models(ticket_id, "top_manager", changes)
+        return {"ticket_id": ticket_id, "models": t.get("models") or {}}
+
     # ------------------------------------------------------- crash / power-loss recovery
 
     def recovery(self, apply: bool = False) -> dict[str, Any]:
@@ -502,6 +515,10 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
     rr = sub.add_parser("release-resource")
     rr.add_argument("name")
     rr.add_argument("reason", nargs="?", default="")
+    sm = sub.add_parser("set-models", help="choose models for one ticket and everything below it")
+    sm.add_argument("id")
+    sm.add_argument("--manager", help="model name, or 'default'")
+    sm.add_argument("--worker", help="model name, or 'default'")
     sub.add_parser("finish").add_argument("summary")
     a = ap.parse_args(argv)
 
@@ -543,6 +560,8 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
             out = ctl.set_safe_to_stop(a.name, a.note)
         elif a.cmd == "release-resource":
             out = ctl.release_resource(a.name, a.reason)
+        elif a.cmd == "set-models":
+            out = ctl.set_models(a.id, a.manager, a.worker)
         elif a.cmd == "finish":
             out = ctl.finish(a.summary)
         elif a.cmd in ("pause", "unpause"):

@@ -145,7 +145,8 @@ class Manager:
         msgs: list[dict[str, Any]] = [{"role": "user", "content": user}]
         invalid = tool_steps = 0
         while True:
-            model = self.manager_models[min(invalid, len(self.manager_models) - 1)]
+            chain = self._manager_chain(ticket_id)
+            model = chain[min(invalid, len(chain) - 1)]
             if ticket_id and self.store.get_ticket(ticket_id)["status"] == "cancelled":
                 raise _Cancelled(ticket_id)
             self._status(ticket_id, "thinking", doing, model)
@@ -256,8 +257,13 @@ class Manager:
             if self.store.get_ticket(c["id"])["status"] in ("open", "in_progress"):
                 self.store.escalate(c["id"], self.name, note, kind="technical", to="manager")
 
+    def _manager_chain(self, ticket_id: str | None) -> list[str]:
+        chosen = self.store.chosen_model(ticket_id, "manager") if ticket_id else None
+        return [chosen, *[m for m in self.manager_models if m != chosen]] if chosen else self.manager_models
+
     def _models_for(self, c: dict[str, Any], index: int) -> list[str]:
-        models = self.worker_models
+        chosen = self.store.chosen_model(c["id"], "worker")
+        models = [chosen, *[m for m in self.worker_models if m != chosen]] if chosen else self.worker_models
         if self.diverse_workers and len(models) > 1:      # spread verifiers across models
             k = index % len(models)
             return models[k:] + models[:k]

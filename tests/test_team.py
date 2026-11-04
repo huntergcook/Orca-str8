@@ -369,3 +369,31 @@ def test_claim_resource_can_wait_for_a_busy_resource(store, tmp_path):
     t0 = time.monotonic()
     r = box.call("claim_resource", {"name": "rig", "wait": 10})
     assert r["ok"] and r["claimed"] == "rig" and time.monotonic() - t0 < 6
+
+
+# ------------------------------------------------------------------------- the top manager picks models per ticket
+
+def test_models_chosen_on_a_ticket_apply_to_its_manager_and_all_workers_below(tmp_path):
+    cfg = load_config(None)
+    cfg["departments"] = {"research": {}}
+    cfg["models"]["manager"] = {"provider": "deepseek", "model": "cheap"}
+    cfg["models"]["worker"] = {"provider": "deepseek", "model": "cheap"}
+    cfg["models"]["fallback_chain"] = [{"provider": "deepseek", "model": "strong"}]
+    p = Probe(delay=0)
+    ctl = Ctl(cfg, tmp_path / "ws", p)
+    easy = ctl.create(dict(department="research", title="easy", context="c", acceptance_criteria=["a"],
+                           return_spec={"format": "f", "description": "d"}))["ticket_id"]
+    hard = ctl.create(dict(department="research", title="hard", context="c", acceptance_criteria=["a"],
+                           return_spec={"format": "f", "description": "d"}))["ticket_id"]
+    assert ctl.set_models(hard, manager="strong", worker="strong")["models"] == {"manager": "strong", "worker": "strong"}
+    with pytest.raises(Exception, match="unknown model"):
+        ctl.set_models(easy, worker="nonexistent")
+    ctl.run()
+    by_ticket = {}
+    for c in p.calls:
+        first = c["messages"][0]["content"]
+        key = "hard" if hard in first else "easy"              # workers' prompts carry the parent id in the origin trace
+        by_ticket.setdefault(key, set()).add(c["model"])
+    assert by_ticket["hard"] == {"strong"} and by_ticket["easy"] == {"cheap"}
+    assert ctl.set_models(hard, worker="default")["models"] == {"manager": "strong"}
+    ctl.close()

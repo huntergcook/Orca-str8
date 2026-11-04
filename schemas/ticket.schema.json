@@ -74,6 +74,14 @@
         "context_files": { "type": "array", "items": { "type": "string" }, "description": "Files shown to the worker up front." }
       }
     },
+    "models": {
+      "type": "object",
+      "description": "Model choice for this ticket and everything below it (set by the level above, e.g. a stronger model for a hard ticket). Missing tiers use the config.",
+      "properties": {
+        "manager": { "type": "string", "description": "Model for the manager deciding this ticket." },
+        "worker": { "type": "string", "description": "First model for workers under this ticket; the config's fallback chain follows." }
+      }
+    },
     "worker_tickets": {
       "type": "array",
       "description": "Precise worker tickets the manager must delegate as written, skipping its own planning.",

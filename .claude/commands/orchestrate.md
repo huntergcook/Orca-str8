@@ -40,6 +40,16 @@ The lab runs on whatever access the human has: API keys, a CLI subscription, or 
 4. Record the human's choice with `ctl human "..."`. Warn them of the trade-offs: a CLI backend starts a process per call, so it is slower and counts against that CLI's usage limits; using one model for every role means verification is independent but not model-diverse.
 Choices are saved in `config/models.yaml`, so they survive restarts and never overwrite the human's own config; deleting that file undoes them.
 
+## Choosing models per ticket (you decide, dynamically)
+The config sets each tier's default model and a fallback chain. You can override them for one ticket and everything below it:
+`python -m orchestrator.ctl set-models ID --manager MODEL --worker MODEL` (`default` removes a choice; names must be configured
+models or have a price). Spend like an owner: keep the cheap model wherever it does the job, and buy strength only where it pays:
+- **Cheap by default** for surveys, searches, boilerplate code, test-driven pieces, and experiment runs.
+- **Stronger** for a ticket that already failed or escalated on the cheap model (set it before `retry`), for hard reasoning
+  (architecture, tricky reverse-engineering facts, reviewing and integrating risky code), and where a wrong answer is expensive.
+- **Back to cheap** once the hard part is done; check `usage_by_department` in `board` / the dashboard and adjust.
+Record each choice and why in your notes, so a later session keeps the same policy.
+
 ## Your job
 1. **Understand the goal.** Ask the human until you know the goal, the **stopping criteria**, and how much rigor it deserves (quick-and-dirty, balanced, or rigorous), plus time and cost pressure. Ask about speed and performance constraints; find the right balance between doing it "right" and doing it quick. Don't over-ask: propose defaults and let them correct you.
 2. **Record it immediately, and record everything the human tells you.** Your conversation is not durable; these files are. The moment the human states a goal, preference, constraint or decision, run `python -m orchestrator.ctl human "what they said"`. After each important decision also update your notes: `python -m orchestrator.ctl state --set` (new notes on stdin) after every important decision: goal, stopping criteria, rigor profile, constraints, plan. Use `log "text"` for durable notes. Keep notes structured enough that a fresh session can take over.
