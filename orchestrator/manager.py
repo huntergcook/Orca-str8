@@ -14,6 +14,7 @@ from .agent import parse_reply, run_ticket, ticket_prompt
 from .memory import Memory
 from .providers import Provider
 from .store import Store
+from .tools import ToolBox
 
 ROLES_DIR = Path(__file__).resolve().parents[1] / "roles"
 
@@ -41,8 +42,10 @@ def load_role(name: str, default: str = "") -> str:
 class Manager:
     def __init__(self, name: str, store: Store, provider: Provider, cfg: dict[str, Any],
                  workspace: str | Path, role_text: str, manager_models: list[str],
-                 worker_models: list[str]) -> None:
+                 worker_models: list[str], can_acquire_tools: bool = False) -> None:
         self.name = name
+        self.workspace = Path(workspace)
+        self.can_acquire_tools = can_acquire_tools
         self.store, self.provider, self.cfg = store, provider, cfg
         self.memory = Memory(workspace, name)
         self.role_text = role_text
@@ -117,9 +120,11 @@ class Manager:
             open_kids = [c for c in children if c["status"] == "open"]
             if open_kids:
                 for c in open_kids:
+                    box = ToolBox(self.workspace, actor=c["assignee"], can_acquire=self.can_acquire_tools,
+                                  store=self.store)
                     run_ticket(self.store, self.provider, c["id"], c["assignee"],
                                load_role(c["worker_role"]), self.worker_models,
-                               self.cfg["policies"]["capability_retry_limit"])
+                               self.cfg["policies"]["capability_retry_limit"], toolbox=box)
                 continue
 
             # 2. answer worker questions

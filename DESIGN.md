@@ -36,6 +36,16 @@ Human <-CLI-> Top Manager
 | Experiment | Requests tools for hardware automation, runs long tests/sweeps with them, oversees them and fixes failures. Files research tickets for questions beyond its scope. |
 | Verification | Compares task results to the broader goal, strictly. **Advisory**: managers must weigh it heavily but keep final say. Uses diverse models across verifiers. |
 
+### Tooling and anti-reinvention
+
+Order for any need: **registry, then open source, then build.**
+
+- The tool library lives in `workspace/tools/`; `registry.json` records each tool's description, usage, tags, source URL, license and who added it. Vendored repos go in `tools/vendor/<name>`.
+- Every worker can `search_registry` and `request_tool` (files a ticket to Tooling with the top manager copied).
+- Only departments with `can_acquire_tools` (Tooling by default) can `search_github`, `acquire_git` (https URLs only, validated names, shallow clone, license recorded, missing license flagged) and `register_tool`.
+- Acquired code is never executed by the orchestrator and is treated as untrusted until inspected. There is no sandbox yet.
+- Implemented in `orchestrator/tools.py`; roles in `roles/tooling_manager.md` and `roles/workers/tool_scout.md`.
+
 ## 3. Tickets
 
 Tickets are the only way work and information move between agents. See `schemas/ticket.schema.json`.

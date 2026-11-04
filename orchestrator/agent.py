@@ -88,22 +88,25 @@ def _usage(store: Store, ticket_id: str, actor: str, c: Completion) -> None:
 
 
 def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, role_text: str,
-               models: list[str], capability_retry_limit: int = 3) -> dict[str, Any]:
+               models: list[str], capability_retry_limit: int = 3, toolbox: Any | None = None,
+               max_tool_steps: int = 12) -> dict[str, Any]:
     """Run one worker to completion on a ticket and return the updated ticket.
 
     Capability failures (unparseable reply) retry along `models` up to the limit, then escalate.
     Safety refusals retry ONCE with an honest restatement on the SAME model, then escalate to the
     human with the refusal attached. They are never rerouted to another model automatically.
+    Tool calls (when a toolbox is given) do not count against the retry limit, but are capped.
     """
     t = store.get_ticket(ticket_id)
     if t["status"] == "open":
         store.transition(ticket_id, "in_progress", actor, note="worker started")
         t = store.get_ticket(ticket_id)
-    system = f"{role_text}\n\n{PROTOCOL}"
+    sep = chr(10) * 2
+    system = role_text + sep + PROTOCOL + ((sep + toolbox.describe()) if toolbox else "")
     messages: list[dict[str, Any]] = [{"role": "user", "content": ticket_prompt(t)}]
-    refusals = 0
+    refusals = attempt = tool_steps = 0
 
-    for attempt in range(capability_retry_limit + 1):  # +1 slot for the refusal retry
+    while attempt <= capability_retry_limit:  # +1 slot for the refusal retry
         # Refusal retries stay on the same model; only capability failures advance the chain.
         model = models[min(attempt - refusals, len(models) - 1)]
         c = provider.complete(model=model, system=system, messages=messages)
@@ -118,6 +121,7 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
                                         note=f"model refusal ({c.refusal_category}); needs human decision")
             store.add_event(ticket_id, actor, "refusal", {"category": c.refusal_category, "model": c.model})
             messages = messages[:1] + [{"role": "user", "content": _restated(t)}]
+            attempt += 1
             continue
 
         reply = parse_reply(c.text)
@@ -128,9 +132,22 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
                 {"role": "assistant", "content": c.text or "(empty)"},
                 {"role": "user", "content": "That was not a valid reply. Respond with exactly one JSON object per the protocol."},
             ]
+            attempt += 1
             continue
 
         action = reply["action"]
+        if action == "tool" and toolbox is not None:
+            tool_steps += 1
+            if tool_steps > max_tool_steps:
+                result: dict[str, Any] = {"ok": False, "error": "tool step limit reached; finish with done/ask/escalate/fail"}
+            else:
+                result = toolbox.call(str(reply.get("tool", "")), reply.get("args") or {})
+                store.add_event(ticket_id, actor, "tool_call", {"tool": reply.get("tool"), "ok": result.get("ok")})
+            messages = messages + [{"role": "assistant", "content": c.text},
+                                   {"role": "user", "content": "Tool result: " + json.dumps(result)[:8000]}]
+            if tool_steps > max_tool_steps + 2:
+                break
+            continue
         if action == "done":
             return store.transition(ticket_id, "done", actor, result=reply.get("result") or {})
         if action == "ask":

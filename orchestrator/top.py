@@ -45,7 +45,8 @@ class TopManager:
                 ROLES_DIR.parent / role_path).exists() else load_role("department_manager.template").replace(
                 "{{DEPARTMENT}}", dept).replace("{{DEPARTMENT_MISSION}}", spec.get("mission", dept))
             self.managers[dept] = Manager(f"{dept}_manager", store, provider, cfg, workspace, role,
-                                          mgr_models, wrk_models)
+                                          mgr_models, wrk_models,
+                                          can_acquire_tools=bool(spec.get("can_acquire_tools", False)))
 
     # ------------------------------------------------------------------ context
 
@@ -121,9 +122,14 @@ class TopManager:
             self.finished = True
 
     def pump(self) -> None:
-        """Run department managers on their open top-level tickets."""
-        for m in self.managers.values():
-            for t in self.store.list_tickets(status="open", assignee=m.name):
-                m.work(t["id"])
-            for t in self.store.list_tickets(status="in_progress", assignee=m.name):
-                m.work(t["id"])
+        """Run department managers on their open top-level tickets. Repeats a few passes
+        because workers can file tickets to other departments (e.g. tool requests) mid-run."""
+        for _ in range(5):
+            ran = False
+            for m in self.managers.values():
+                for status in ("open", "in_progress"):
+                    for t in self.store.list_tickets(status=status, assignee=m.name):
+                        m.work(t["id"])
+                        ran = True
+            if not ran:
+                break

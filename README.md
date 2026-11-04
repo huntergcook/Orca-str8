@@ -28,3 +28,6 @@ pytest
 - `orchestrator/manager.py`: department manager loop (plan, run workers, answer questions, review)
 - `orchestrator/top.py`: top manager (rebuilds context from files each turn)
 - `orchestrator/memory.py`, `config.py`, `providers.py`, `dashboard.py`
+
+## License
+Public domain under the [Unlicense](LICENSE): copy, change, sell or relicense it however you like. Third-party tools that the Tooling department vendors into `workspace/tools/vendor/` keep their own licenses, which are recorded in the tool registry.
