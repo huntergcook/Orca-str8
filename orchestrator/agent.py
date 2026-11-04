@@ -23,8 +23,8 @@ Work only on the ticket below; stay inside its scope. Reply with exactly one JSO
 Match your effort to the ticket's rigor level."""
 
 
-def parse_reply(text: str) -> dict[str, Any] | None:
-    """Extract the first balanced JSON object that has an 'action' key."""
+def parse_reply(text: str, key: str = "action") -> dict[str, Any] | None:
+    """Extract the first balanced JSON object that has `key` (default 'action')."""
     start = text.find("{")
     while start != -1:
         depth, in_str, esc = 0, False, False
@@ -46,7 +46,7 @@ def parse_reply(text: str) -> dict[str, Any] | None:
                 if depth == 0:
                     try:
                         obj = json.loads(text[start:i + 1])
-                        if isinstance(obj, dict) and "action" in obj:
+                        if isinstance(obj, dict) and key in obj:
                             return obj
                     except json.JSONDecodeError:
                         pass
