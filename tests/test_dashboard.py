@@ -51,3 +51,14 @@ def test_dashboard_is_read_only(store, tmp_path):
     with pytest.raises(sqlite3.OperationalError):
         c.execute("DELETE FROM tickets")
     c.close()
+
+
+def test_demo_seed_fills_every_panel(tmp_path):
+    from orchestrator.dashboard import build_state, seed_demo
+    from orchestrator.config import load_config
+    seed_demo(tmp_path / "d.db")
+    s = build_state(tmp_path / "d.db", load_config(None))
+    kinds = {n["status"] for n in s["needs_human"]}
+    assert kinds == {"escalated", "needs_clarification"}
+    assert s["resources"] and s["jobs"] and s["org"] and s["events"] and s["spend"]["input_tokens"] == 120000
+    assert s["by_status"]["done"] >= 2

@@ -80,6 +80,42 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
         c.close()
 
 
+def seed_demo(db_path: str | Path) -> None:
+    """Fill a fresh database with sample data so every dashboard panel has something to show."""
+    from .store import Store
+    st = Store(db_path)
+    base = dict(worker_role="w", context="c", acceptance_criteria=["a"],
+                return_spec={"format": "f", "description": "d"})
+    done = st.create_ticket({**base, "title": "Survey serial libraries", "assignee": "research_manager",
+                             "rigor": "quick_and_dirty"}, "top_manager")
+    st.transition(done["id"], "in_progress", "research_manager")
+    w1 = st.create_ticket({**base, "title": "Read pyserial docs", "assignee": "worker:surveyor"},
+                          "research_manager", parent_id=done["id"])
+    st.transition(w1["id"], "in_progress", "worker:surveyor")
+    st.transition(w1["id"], "done", "worker:surveyor", result={"summary": "pyserial is the standard"})
+    st.add_verification(done["id"], "research_manager", "concerns", ["[deepseek-v4-pro] concerns: no benchmark"])
+    st.transition(done["id"], "done", "research_manager", result={"recommendation": "pyserial"})
+    tool = st.create_ticket({**base, "title": "Need a serial logger tool", "assignee": "tooling_manager"}, "worker:exp")
+    st.transition(tool["id"], "in_progress", "tooling_manager")
+    w2 = st.create_ticket({**base, "title": "Find logger on GitHub", "assignee": "worker:tool_scout"},
+                          "tooling_manager", parent_id=tool["id"])
+    st.transition(w2["id"], "in_progress", "worker:tool_scout")
+    risky = st.create_ticket({**base, "title": "Sweep heater power", "assignee": "experiment_manager",
+                              "rigor": "rigorous"}, "top_manager")
+    st.transition(risky["id"], "in_progress", "experiment_manager")
+    st.transition(risky["id"], "escalated", "experiment_manager", note="temperature rising faster than expected")
+    q = st.create_ticket({**base, "title": "Pick sampling rate", "assignee": "research_manager"}, "top_manager")
+    st.transition(q["id"], "in_progress", "research_manager")
+    st.ask_question(q["id"], "research_manager", "What sampling rate does the sensor support?")
+    st.register_resource("thermal-rig", "stop between sweep points")
+    st.register_resource("scope-1")
+    st.claim_resource("thermal-rig", risky["id"], "20m", actor="worker:runner")
+    st.create_job(risky["id"], "worker:runner", "heater-sweep", ["python", "sweep.py"], "demo.log",
+                  resource="thermal-rig", pid=1)
+    st.add_event(None, "deepseek-v4-pro", "usage", {"input_tokens": 120000, "output_tokens": 31000})
+    st.close()
+
+
 def create_app(db_path: str | Path, cfg: dict[str, Any] | None = None) -> FastAPI:
     cfg = cfg or load_config(None)
     app = FastAPI(title="Orchestrator dashboard", docs_url=None, redoc_url=None)
@@ -101,9 +137,16 @@ def main() -> None:
     ap.add_argument("--config", default="config/orchestrator.yaml")
     ap.add_argument("--db", default=None)
     ap.add_argument("--port", type=int, default=None)
+    ap.add_argument("--demo", action="store_true", help="serve a temporary database filled with sample data")
     a = ap.parse_args()
     cfg = load_config(a.config)
     db = a.db or Path(cfg["workspace"]) / "orchestrator.db"
+    if a.demo:
+        import tempfile
+        db = Path(tempfile.mkdtemp(prefix="orch-demo-")) / "demo.db"
+        seed_demo(db)
+        cfg["budget"]["max_tokens"] = 400000
+        print(f"Demo mode: sample data in {db}")
     port = a.port or cfg["interfaces"]["dashboard"]["port"]
     uvicorn.run(create_app(db, cfg), host="127.0.0.1", port=port, log_level="warning")
 
