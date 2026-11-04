@@ -3,7 +3,7 @@ name = "orchestrator"
 version = "0.0.1"
 description = "Hierarchical LLM research-lab orchestrator"
 requires-python = ">=3.11"
-license = {text = "Unlicense"}
+license = {text = "MIT"}
 dependencies = ["jsonschema>=4", "pyyaml>=6", "fastapi>=0.110", "uvicorn>=0.29", "psutil>=5", "httpx>=0.27"]
 
 [project.optional-dependencies]

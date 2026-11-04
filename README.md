@@ -310,5 +310,5 @@ python -m pytest -q
 
 ## License
 
-Public domain under the [Unlicense](LICENSE): copy, change, sell or relicense it however you like. Third-party tools the
+[MIT](LICENSE): use, copy, change, sell or relicense it however you like; just keep the copyright and license notice. Third-party tools the
 Tooling department downloads into a project keep their own licenses, which are recorded in that project's tool registry.
