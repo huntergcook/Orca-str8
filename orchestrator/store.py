@@ -247,6 +247,15 @@ class Store:
                         {"from": old, "to": new_status, "note": note})
             return t
 
+    def add_verification(self, ticket_id: str, actor: str, verdict: str, notes: list[str]) -> dict[str, Any]:
+        """Attach advisory verification notes to a ticket and log the verdict."""
+        with self._tx() as c:
+            t = self._load(c, ticket_id)
+            t.setdefault("verification_notes", []).extend(notes)
+            self._save(c, t)
+            self._event(c, ticket_id, actor, "verification", {"verdict": verdict, "notes": notes})
+            return t
+
     def assign(self, ticket_id: str, assignee: str, actor: str) -> dict[str, Any]:
         with self._tx() as c:
             t = self._load(c, ticket_id)

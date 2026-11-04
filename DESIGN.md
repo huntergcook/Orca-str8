@@ -55,6 +55,15 @@ Order for any need: **registry, then open source, then build.**
 - Jobs are plain subprocesses (no shell) logging to `workspace/jobs/<id>/log.txt`. There is no sandbox: scripts can do whatever the user's account can. The human is responsible for a safe harness; agents escalate anything that looks unsafe.
 - Implemented in `orchestrator/hardware.py` and `orchestrator/tools.py`; roles in `roles/experiment_manager.md` and `roles/workers/experiment_runner.md`.
 
+### Verification
+
+- **Automatic gate.** When a department manager decides a ticket is done, independent verifiers check it first. Each verifier is a fresh, stateless call (no shared context with the work), run on a different model from `verification.verifier_models` for diversity.
+- Verifiers see the **broader goal** (the root ticket plus the top manager's state notes), the ticket, the claimed result, the workers' outputs and the **evidence files** the result points at (workspace paths only). Strictness follows the ticket's `rigor`.
+- Verdicts are `pass` / `concerns` / `fail`; the worst verdict wins. Notes are attached to the ticket (`verification_notes`) and logged as events.
+- **Advisory.** The manager gets the report and is told to weigh it heavily, then fixes the problems (delegating follow-ups), finishes anyway with an `override_reason` (logged as `verification_overridden`), or escalates. The manager keeps the final say. Rounds are capped (`verification.max_rounds`); after that the manager's decision stands.
+- Requested audits go to the Verification department itself, whose workers rotate across the verifier models. Verification results are not themselves verified.
+- Implemented in `orchestrator/verification.py` and `Manager._verify_gate`; roles in `roles/verification_manager.md` and `roles/workers/verifier.md`.
+
 ## 3. Tickets
 
 Tickets are the only way work and information move between agents. See `schemas/ticket.schema.json`.

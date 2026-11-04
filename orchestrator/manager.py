@@ -16,6 +16,7 @@ from .providers import Provider
 from .store import Store
 from .hardware import JobRunner, hardware_brief
 from .tools import ToolBox
+from .verification import Verifier
 
 ROLES_DIR = Path(__file__).resolve().parents[1] / "roles"
 
@@ -25,7 +26,8 @@ Reply with exactly one JSON object:
       {"title": "...", "worker_role": "...", "context": "...only what the worker needs...",
        "acceptance_criteria": ["..."], "return_spec": {"format": "...", "description": "..."},
        "rigor": "quick_and_dirty|balanced|rigorous"}]}
-  {"action": "done", "notes": "...", "result": {...}}      # shaped as your ticket's return_spec
+  {"action": "done", "notes": "...", "result": {...},       # result shaped as your ticket's return_spec
+   "override_reason": "..."}                                # only if finishing despite verification concerns
   {"action": "answer", "answer": "..."}                    # only when answering a worker's question
   {"action": "ask", "question": "..."}                     # you need clarification from above
   {"action": "escalate", "reason": "..."}                  # safety issue or something above your authority
@@ -44,8 +46,10 @@ class Manager:
     def __init__(self, name: str, store: Store, provider: Provider, cfg: dict[str, Any],
                  workspace: str | Path, role_text: str, manager_models: list[str],
                  worker_models: list[str], can_acquire_tools: bool = False,
-                 can_use_hardware: bool = False, jobs: JobRunner | None = None) -> None:
+                 can_use_hardware: bool = False, jobs: JobRunner | None = None,
+                 verifier: Verifier | None = None, diverse_workers: bool = False) -> None:
         self.name = name
+        self.verifier, self.diverse_workers = verifier, diverse_workers
         self.workspace = Path(workspace)
         self.can_acquire_tools = can_acquire_tools
         self.can_use_hardware = can_use_hardware
@@ -110,6 +114,41 @@ class Manager:
             spec.setdefault("rigor", self.store.get_ticket(ticket_id).get("rigor", "balanced"))
             self.store.create_ticket(spec, actor=self.name, parent_id=ticket_id, max_children=cap)
 
+    # ------------------------------------------------------------ verification
+
+    def _verify_gate(self, ticket_id: str, d: dict[str, Any]) -> dict[str, Any]:
+        """Independent advisory check before a 'done' is accepted. The manager keeps the final say:
+        it may fix things, finish anyway (override is logged), or escalate. Rounds are capped."""
+        if self.verifier is None:
+            return d
+        max_rounds = self.cfg["verification"]["max_rounds"]
+        verdict = "pass"
+        while d.get("action") == "done":
+            t = self.store.get_ticket(ticket_id)
+            past = [e for e in self.store.events(ticket_id) if e["type"] == "verification"]
+            if len(past) >= max_rounds:
+                verdict = past[-1]["payload"]["verdict"] if past else "pass"
+                break
+            report = self.verifier.verify(t, d.get("result"), self.name)
+            verdict = report["verdict"]
+            if verdict == "pass":
+                break
+            left = max_rounds - len(past) - 1
+            d2 = self._decide(
+                f"# Your ticket\n{ticket_prompt(t)}\n\n# Verification report (independent, advisory)\n"
+                f"{self.verifier.format_report(report)}\n\nWeigh this heavily; it is written by checkers with the "
+                f"broadest view of the goal. You keep the final say. Fix the problems (delegate follow-ups), "
+                f"or finish with 'override_reason' if you disagree, or escalate. Verification rounds left: {left}.")
+            if d2 is None:
+                break
+            d = d2
+            if d.get("override_reason"):      # manager disagrees and says why: respect the final say
+                break
+        if d.get("action") == "done" and verdict != "pass":
+            self.store.add_event(ticket_id, self.name, "verification_overridden",
+                                 {"verdict": verdict, "reason": d.get("override_reason") or "none given"})
+        return d
+
     # -------------------------------------------------------------------- work
 
     def work(self, ticket_id: str, max_rounds: int = 6) -> dict[str, Any]:
@@ -126,12 +165,16 @@ class Manager:
             # 1. run any open workers
             open_kids = [c for c in children if c["status"] == "open"]
             if open_kids:
-                for c in open_kids:
+                for i, c in enumerate(open_kids):
+                    models = self.worker_models
+                    if self.diverse_workers and len(models) > 1:      # spread verifiers across models
+                        k = (len(children) - len(open_kids) + i) % len(models)
+                        models = models[k:] + models[:k]
                     box = ToolBox(self.workspace, actor=c["assignee"], can_acquire=self.can_acquire_tools,
                                   store=self.store, ticket_id=c["id"], can_use_hardware=self.can_use_hardware,
                                   jobs=self.jobs)
                     run_ticket(self.store, self.provider, c["id"], c["assignee"],
-                               load_role(c["worker_role"]), self.worker_models,
+                               load_role(c["worker_role"]), models,
                                self.cfg["policies"]["capability_retry_limit"], toolbox=box)
                 continue
 
@@ -158,6 +201,8 @@ class Manager:
             if d is None:
                 self.store.transition(ticket_id, "escalated", self.name, note="no valid decision from model")
                 break
+            if d.get("action") == "done":
+                d = self._verify_gate(ticket_id, d)
             if d.get("action") == "delegate":
                 self._delegate(ticket_id, d)
                 if d.get("notes"):

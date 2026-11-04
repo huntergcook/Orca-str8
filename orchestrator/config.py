@@ -25,6 +25,11 @@ DEFAULTS: dict[str, Any] = {
         "default_rigor": "balanced",
         "verification_is_advisory": True,
     },
+    "verification": {
+        "enabled": False,        # gate manager results through independent verifiers
+        "verifier_models": [],   # distinct models for diversity; empty = use the manager model chain
+        "max_rounds": 2,         # verification passes per ticket before the manager's decision stands
+    },
     "departments": {},
     "interfaces": {"cli": True, "dashboard": {"enabled": True, "port": 8080}},
 }

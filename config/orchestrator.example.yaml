@@ -31,6 +31,13 @@ policies:
   default_rigor: balanced     # quick_and_dirty | balanced | rigorous
   verification_is_advisory: true
 
+verification:
+  enabled: true                # independent advisory check on every manager result
+  verifier_models:             # distinct models for diversity (add other providers' models later)
+    - claude-opus-5-5
+    - claude-sonnet-5-5
+  max_rounds: 2                # verification passes per ticket before the manager's decision stands
+
 departments:
   research:
     manager_role: roles/research_manager.md

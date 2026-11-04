@@ -15,6 +15,7 @@ from .hardware import JobRunner
 from .memory import Memory, human_log
 from .providers import Provider
 from .store import Store
+from .verification import Verifier
 
 TOP_PROTOCOL = """\
 Reply with exactly one JSON object:
@@ -40,17 +41,24 @@ class TopManager:
         self.finished = False
         mgr_models, wrk_models = model_chain(cfg, "manager"), model_chain(cfg, "worker")
         self.jobs = JobRunner(store, workspace)
+        vcfg = cfg["verification"]
+        verifier_models = list(vcfg.get("verifier_models") or []) or mgr_models
+        verifier = Verifier(store, provider, cfg, workspace, verifier_models) if vcfg.get("enabled") else None
         self.managers: dict[str, Manager] = {}
         for dept, spec in cfg["departments"].items():
             role_path = Path(spec.get("manager_role", ""))
             role = (ROLES_DIR.parent / role_path).read_text(encoding="utf-8") if role_path.name and (
                 ROLES_DIR.parent / role_path).exists() else load_role("department_manager.template").replace(
                 "{{DEPARTMENT}}", dept).replace("{{DEPARTMENT_MISSION}}", spec.get("mission", dept))
+            is_verification = dept == "verification"
+            diverse = bool(spec.get("diverse_models", False)) and len(verifier_models) > 1
             self.managers[dept] = Manager(f"{dept}_manager", store, provider, cfg, workspace, role,
-                                          mgr_models, wrk_models,
+                                          mgr_models, verifier_models if diverse else wrk_models,
                                           can_acquire_tools=bool(spec.get("can_acquire_tools", False)),
                                           can_use_hardware=bool(spec.get("resource_leases", False)),
-                                          jobs=self.jobs)
+                                          jobs=self.jobs,
+                                          verifier=None if is_verification else verifier,
+                                          diverse_workers=diverse)
 
     # ------------------------------------------------------------------ context
 
