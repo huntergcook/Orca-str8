@@ -140,8 +140,8 @@ class ToolBox:
                          + ", ".join(str(r) for r in self.read_roots) + ". You cannot write there; save your output in the workspace. Secret files are blocked.")
         if self.can_use_hardware and self.jobs:
             lines += ["Hardware (Experiment department). Prefer an automated Python tool that runs the whole sweep over driving hardware by hand; then oversee it:",
-                      "- list_resources {}: hardware flags. claim_resource {name, expected_duration} BEFORE touching a resource; release_resource {name} when done.",
-                      "- start_job {script, args?, name?, resource?}: run a long script in the background (needs the resource claimed). job_status {job_id}, job_tail {job_id, lines?}, wait_job {job_id, seconds?}, stop_job {job_id}.",
+                      "- list_resources {}: hardware flags. claim_resource {name, expected_duration, wait? (seconds up to 600 to wait if it is busy)} BEFORE touching a resource; release_resource {name} when done.",
+                      "- start_job {script, args?, name?, resource?}: run a long script in the background (needs the resource claimed). job_status {job_id}, job_tail {job_id, lines?}, wait_job {job_id, seconds? (up to 600; returns as soon as the job ends, and keeps the resource lease alive)}, stop_job {job_id}.",
                       "- heartbeat_resource {name}: call periodically while you hold a resource.",
                       "If anything looks physically unsafe, stop the job and reply with the escalate action."]
         if self.can_acquire:
@@ -345,8 +345,18 @@ class ToolBox:
                                  for j in self._need_store().list_jobs(state="running")]}
 
     def _t_claim_resource(self, a: dict[str, Any]) -> dict[str, Any]:
-        self._need_store().claim_resource(str(a["name"]), self.ticket_id, str(a.get("expected_duration", "")), self.actor)
-        return {"claimed": a["name"]}
+        """With `wait` (seconds, up to 600) a busy resource is waited for instead of failing at once."""
+        import time as _time
+        deadline = _time.monotonic() + max(0.0, min(float(a.get("wait", 0) or 0), 600.0))
+        while True:
+            try:
+                self._need_store().claim_resource(str(a["name"]), self.ticket_id, str(a.get("expected_duration", "")),
+                                                  self.actor)
+                return {"claimed": a["name"]}
+            except StoreError:
+                if _time.monotonic() >= deadline:
+                    raise
+                _time.sleep(2.0)
 
     def _t_release_resource(self, a: dict[str, Any]) -> dict[str, Any]:
         running = [j for j in self._need_store().list_jobs(state="running", ticket_id=self.ticket_id)

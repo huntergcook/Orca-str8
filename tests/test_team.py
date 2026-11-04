@@ -356,3 +356,16 @@ def test_an_unknown_manager_action_gets_feedback_instead_of_an_escalation(store,
 
     m = Manager("research_manager", store, Probe(delay=0, lead=lead), load_config(None), tmp_path, "role", ["m"], ["w"])
     assert m.work(top(store))["status"] == "done"
+
+
+def test_claim_resource_can_wait_for_a_busy_resource(store, tmp_path):
+    store.register_resource("rig", "safe any time")
+    a = store.create_ticket({**SPEC, "title": "a", "assignee": "worker:r-1"}, "m")["id"]
+    b = store.create_ticket({**SPEC, "title": "b", "assignee": "worker:r-2"}, "m")["id"]
+    store.claim_resource("rig", a, "1m", "w1")
+    box = ToolBox(tmp_path, "w2", store=store, ticket_id=b, can_use_hardware=True)
+    assert box.call("claim_resource", {"name": "rig"})["ok"] is False                 # busy: fails at once without wait
+    threading.Timer(0.5, lambda: store.release_resource("rig", a, "w1")).start()
+    t0 = time.monotonic()
+    r = box.call("claim_resource", {"name": "rig", "wait": 10})
+    assert r["ok"] and r["claimed"] == "rig" and time.monotonic() - t0 < 6

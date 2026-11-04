@@ -22,7 +22,7 @@ import psutil
 from .store import NotFound, Store, StoreError
 from .util import process_alive
 
-MAX_WAIT = 60.0
+MAX_WAIT = 600.0          # a wait returns as soon as the job ends, so long waits cost one tool step, not many
 
 
 def venv_python(workspace: str | Path) -> Path | None:
@@ -115,9 +115,16 @@ class JobRunner:
         """Block up to `seconds` (capped) or until the job leaves 'running'."""
         deadline = time.monotonic() + max(0.0, min(float(seconds), MAX_WAIT))
         job = self.refresh(job_id)
+        beat = time.monotonic()
         while job["state"] == "running" and time.monotonic() < deadline:
             time.sleep(0.2)
             job = self.refresh(job_id)
+            if job.get("resource") and time.monotonic() - beat >= 30:     # waiting on a job keeps its lease alive
+                beat = time.monotonic()
+                try:
+                    self.store.heartbeat_resource(job["resource"], job["ticket_id"])
+                except Exception:
+                    pass
         return job
 
     def stop(self, job_id: str, actor: str) -> dict[str, Any]:
