@@ -2,14 +2,15 @@
 
 GuardedProvider wraps any Provider. Before each call it refuses (raises Halted) when:
   * a file named PAUSE exists in the workspace (create it to halt all model calls; delete to resume)
-  * the token, time or dollar budget is exhausted (dollars need a `prices` table in the config)
+  * the token or dollar budget (cumulative for the workspace) or the per-run time budget is exhausted
+    (dollars need a `prices` table in the config)
 It also lets at most `policies.max_concurrent_calls` calls run at once, so parallel managers and workers do not
 trip the provider's rate limits. Budgets default to None (unlimited).
 """
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+import time
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,7 @@ class GuardedProvider:
         self.pause_file = Path(workspace) / "PAUSE"
         n = max_concurrent or (cfg.get("policies") or {}).get("max_concurrent_calls") or 8
         self._slots = threading.BoundedSemaphore(max(1, int(n)))
+        self._started = time.monotonic()          # max_minutes limits THIS run, not idle time between runs
 
     def tokens_used(self) -> int:
         t = self.store.usage_totals()
@@ -53,10 +55,8 @@ class GuardedProvider:
         return estimate_cost(self.store.usage_by_model(), self.cfg.get("prices") or {})
 
     def minutes_elapsed(self) -> float:
-        first = self.store.first_event_ts()
-        if not first:
-            return 0.0
-        return (datetime.now(timezone.utc) - datetime.fromisoformat(first)).total_seconds() / 60
+        """Minutes since this run started (a new run gets a fresh time budget; tokens and dollars are cumulative)."""
+        return (time.monotonic() - self._started) / 60
 
     def check(self) -> None:
         if self.pause_file.exists():

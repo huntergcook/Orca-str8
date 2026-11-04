@@ -284,3 +284,17 @@ def test_cost_estimate_and_cost_budget(store, tmp_path):
     store.record_usage(None, "x", "research", Completion(text="", model="m", input_tokens=2000, output_tokens=100))
     with pytest.raises(Halted, match="cost budget exhausted"):
         GuardedProvider(Probe(delay=0), store, cfg, tmp_path).complete(model="m", system="s", messages=[])
+
+
+def test_the_time_budget_applies_per_run_not_to_idle_time_between_runs(store, tmp_path, monkeypatch):
+    cfg = load_config(None)
+    cfg["budget"]["max_minutes"] = 1
+    import orchestrator.limits as limits
+    clock = [1000.0]
+    monkeypatch.setattr(limits.time, "monotonic", lambda: clock[0])
+    g = GuardedProvider(Probe(delay=0), store, cfg, tmp_path)
+    g.check()                                                       # a fresh run starts with its full time budget
+    clock[0] += 61
+    with pytest.raises(Halted, match="time budget"):
+        g.check()
+    GuardedProvider(Probe(delay=0), store, cfg, tmp_path).check()   # the next run starts fresh again
