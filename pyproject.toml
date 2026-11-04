@@ -3,14 +3,17 @@ name = "orchestrator"
 version = "0.0.1"
 description = "Hierarchical LLM research-lab orchestrator"
 requires-python = ">=3.11"
-dependencies = ["jsonschema>=4", "pyyaml>=6"]
+dependencies = ["jsonschema>=4", "pyyaml>=6", "fastapi>=0.110", "uvicorn>=0.29"]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "httpx"]
 anthropic = ["anthropic>=1"]
 
 [tool.setuptools]
 packages = ["orchestrator"]
+
+[tool.setuptools.package-data]
+orchestrator = ["static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

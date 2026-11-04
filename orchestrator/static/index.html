@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orchestrator</title>
+<style>
+  :root { --bg:#fff; --fg:#1b1f24; --mut:#667085; --line:#e4e7ec; --card:#f8f9fb; --warn:#b42318; --warnbg:#fef3f2; --ok:#067647; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14171c; --fg:#e6e8eb; --mut:#98a2b3; --line:#2a2f37; --card:#1b1f26; --warn:#fda29b; --warnbg:#3a1a18; --ok:#6ce9a6; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:16px; display:grid; gap:14px; }
+  h1 { font-size:16px; margin:0; } h2 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin:0 0 8px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; }
+  .need { background:var(--warnbg); border-color:var(--warn); } .need h2 { color:var(--warn); }
+  table { width:100%; border-collapse:collapse; } td,th { text-align:left; padding:3px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mut); font-weight:500; } .mut { color:var(--mut); } code { font-size:12px; }
+  .pill { display:inline-block; padding:0 7px; border-radius:9px; border:1px solid var(--line); font-size:12px; margin-right:4px; }
+  .done { color:var(--ok); } .escalated,.failed { color:var(--warn); }
+  details { margin:2px 0; } ul { margin:4px 0 4px 18px; padding:0; }
+  .scroll { max-height:320px; overflow:auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Orchestrator <span id="stamp" class="mut"></span></h1>
+  <section class="need" id="need-sec" hidden><h2>Needs human</h2><div id="need"></div></section>
+  <div class="grid">
+    <section><h2>Org</h2><div id="org"></div></section>
+    <section><h2>Hardware</h2><div id="hw"></div></section>
+    <section><h2>Spend</h2><div id="spend"></div></section>
+  </div>
+  <section><h2>Tickets</h2><div id="counts"></div><div class="scroll" id="board"></div></section>
+  <section><h2>Event feed</h2><div class="scroll" id="events"></div></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const rows = (a, f) => a.map(f).join("");
+function render(s) {
+  $("need-sec").hidden = !s.needs_human.length;
+  $("need").innerHTML = rows(s.needs_human, n =>
+    `<div><b>${esc(n.title)}</b> <code>${esc(n.id)}</code> <span class="pill">${esc(n.status)}</span> ${esc(n.assignee)}<div class="mut">${esc(n.detail)}</div></div>`);
+  const org = Object.entries(s.org);
+  $("org").innerHTML = org.length ? rows(org, ([m, ws]) =>
+    `<details open><summary><b>${esc(m)}</b> <span class="mut">${ws.length} active worker(s)</span></summary><ul>` +
+    rows(ws, w => `<li>${esc(w.worker)} <span class="pill">${esc(w.status)}</span> ${esc(w.title)}</li>`) + `</ul></details>`) : '<span class="mut">no managers yet</span>';
+  $("hw").innerHTML = s.resources.length ? `<table><tr><th>resource</th><th>state</th><th>holder</th><th>safe to stop</th></tr>` +
+    rows(s.resources, r => `<tr><td>${esc(r.name)}</td><td>${esc(r.state)}</td><td>${esc(r.holder_ticket ?? "")}</td><td class="mut">${esc(r.safe_to_stop)}</td></tr>`) + `</table>` : '<span class="mut">none registered</span>';
+  const sp = s.spend, tot = sp.input_tokens + sp.output_tokens;
+  $("spend").innerHTML = `<div>${tot.toLocaleString()} tokens <span class="mut">(${sp.input_tokens.toLocaleString()} in / ${sp.output_tokens.toLocaleString()} out)</span></div>` +
+    `<div class="mut">budget: ${sp.max_tokens ? tot.toLocaleString() + " / " + sp.max_tokens.toLocaleString() + " tokens" : "none"}${sp.max_cost_usd ? ", $" + sp.max_cost_usd + " cap" : ""}</div>`;
+  $("counts").innerHTML = rows(Object.entries(s.by_status), ([k, v]) => `<span class="pill ${esc(k)}">${esc(k)} ${v}</span>`) || '<span class="mut">no tickets</span>';
+  $("board").innerHTML = s.board.length ? `<table><tr><th>id</th><th>title</th><th>status</th><th>assignee</th><th>rigor</th><th>trace</th></tr>` +
+    rows(s.board, t => `<tr><td><code>${esc(t.id)}</code></td><td>${esc(t.title)}</td><td class="${esc(t.status)}">${esc(t.status)}</td><td>${esc(t.assignee)}</td><td class="mut">${esc(t.rigor)}</td><td class="mut">${esc(t.trace.join(" > "))}</td></tr>`) + `</table>` : "";
+  $("events").innerHTML = `<table>` + rows(s.events, e =>
+    `<tr><td class="mut">${esc(e.ts.slice(11, 19))}</td><td>${esc(e.actor)}</td><td>${esc(e.type)}</td><td class="mut">${esc(e.ticket_id ?? "")} ${esc(JSON.stringify(e.payload))}</td></tr>`) + `</table>`;
+  $("stamp").textContent = "updated " + new Date().toLocaleTimeString();
+}
+async function tick() {
+  try { render(await (await fetch("/api/state")).json()); }
+  catch (e) { $("stamp").textContent = "disconnected"; }
+}
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>
