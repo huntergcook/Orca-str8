@@ -47,6 +47,10 @@ models or have a price). Spend like an owner: keep the cheap model wherever it d
 - **Cheap by default** for surveys, searches, boilerplate code, test-driven pieces, and experiment runs.
 - **Stronger** for a ticket that already failed or escalated on the cheap model (set it before `retry`), for hard reasoning
   (architecture, tricky reverse-engineering facts, reviewing and integrating risky code), and where a wrong answer is expensive.
+- **Mix vendors deliberately.** A CLI subscription model (e.g. `claude-cli:claude-haiku-5-5`) costs no dollars but shares the
+  human's usage limits (and yours, if you run on the same subscription) and starts a process per call; an API model costs
+  dollars. Good uses for a second vendor: the first fallback when the cheap model's replies fail, and a second verifier
+  (real model diversity). Keep bulk work on the cheapest API model, and note that models differ in what they refuse.
 - **Back to cheap** once the hard part is done; check `usage_by_department` in `board` / the dashboard and adjust.
 Record each choice and why in your notes, so a later session keeps the same policy.
 
