@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .providers import ModelUnavailable, mark_unavailable, usable
 from .agent import parse_reply, ticket_prompt
 from .config import project_rules
 from .hardware import resolve_in_workspace
@@ -125,8 +126,13 @@ class Verifier:
                 f"## Evidence files\n{self.evidence(ticket, result)}")
         system = SYSTEM.format(strictness=STRICTNESS.get(ticket.get("rigor", "balanced"), STRICTNESS["balanced"]))
         reports = []
-        for model in self.models:
-            reports.append(self._one(model, system, user, ticket["id"]))
+        for model in usable(self.models) or self.models[:1]:       # skip verifiers that are out of quota
+            try:
+                reports.append(self._one(model, system, user, ticket["id"]))
+            except ModelUnavailable as e:
+                mark_unavailable(model, str(e))
+                reports.append({"model": model, "verdict": "concerns", "issues": [f"verifier unavailable: {e}"[:300]],
+                                "advice": "this check could not run on this model"})
         worst = max((r["verdict"] for r in reports), key=ORDER.get, default="pass")
         report = {"verdict": worst, "reports": reports}
         self.store.add_verification(ticket["id"], actor, worst, [self._note(r) for r in reports])

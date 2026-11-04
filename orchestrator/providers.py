@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,6 +95,26 @@ class AnthropicProvider:
         )
 
 
+
+class ModelUnavailable(RuntimeError):
+    """The model cannot be used for now (subscription limit, quota, no balance). Callers skip to the next model."""
+
+
+UNAVAILABLE: dict[str, str] = {}          # model id -> why; process-wide, since quotas are account-wide
+_UNAVAILABLE_LOCK = threading.Lock()
+_LIMIT_RE = re.compile(r"hit your .{0,40}limit|usage limit|insufficient.{0,20}balance|quota|credit balance|"
+                       r"out of credits|billing", re.I)
+
+
+def mark_unavailable(model: str, why: str) -> None:
+    with _UNAVAILABLE_LOCK:
+        UNAVAILABLE[model] = why[:300]
+
+
+def usable(models: list[str]) -> list[str]:
+    """The models of a chain that are not marked unavailable (order kept)."""
+    return [m for m in models if m not in UNAVAILABLE]
+
 class OpenAICompatProvider:
     """Any OpenAI-format API (POST {base_url}/chat/completions): DeepSeek, OpenAI, Together, and local
     servers such as Ollama (http://localhost:11434/v1) that need no key (require_key=False).
@@ -140,6 +162,8 @@ class OpenAICompatProvider:
                 last = f"HTTP {r.status_code}"
                 time.sleep(self.backoff * (2 ** attempt))
                 continue
+            if r.status_code == 402 or (r.status_code >= 400 and _LIMIT_RE.search(r.text or "")):
+                raise ModelUnavailable(f"API error {r.status_code} from {self.base_url}: {r.text[:300]}")
             if r.status_code >= 400:
                 raise RuntimeError(f"API error {r.status_code} from {self.base_url}: {r.text[:300]}")
             data = r.json()
@@ -265,7 +289,8 @@ class CliProvider:
                 stdin_text = prompt
             rc, stdout, stderr = self.run(cmd, stdin_text, self.timeout, self.cwd)
             if rc != 0:
-                raise RuntimeError(f"{self.executable} exited with code {rc}: {(stderr or stdout).strip()[-300:]}")
+                msg = f"{self.executable} exited with code {rc}: {(stderr or stdout).strip()[-300:]}"
+                raise (ModelUnavailable if _LIMIT_RE.search(stderr or stdout or "") else RuntimeError)(msg)
             if outfile and Path(outfile).is_file():
                 text = Path(outfile).read_text(encoding="utf-8", errors="replace")
             else:
@@ -314,7 +339,11 @@ class RoutingProvider:
             if name not in self.factories:
                 raise RuntimeError(f"no provider '{name}' configured for model {model}")
             self._made[name] = self.factories[name]()
-        c = self._made[name].complete(model=real, system=system, messages=messages, max_tokens=max_tokens)
+        try:
+            c = self._made[name].complete(model=real, system=system, messages=messages, max_tokens=max_tokens)
+        except ModelUnavailable as e:
+            mark_unavailable(model, str(e))
+            raise
         c.model = model                       # report the ID the orchestrator uses, e.g. "codex-cli:default"
         return c
 

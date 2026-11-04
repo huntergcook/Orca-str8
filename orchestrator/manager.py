@@ -22,7 +22,7 @@ from .hardware import JobRunner, hardware_brief
 from .limits import Halted
 from .manager_tools import ManagerToolBox
 from .memory import Memory
-from .providers import Provider
+from .providers import ModelUnavailable, Provider, UNAVAILABLE, mark_unavailable, usable
 from .store import Store, StoreError
 from .tools import ToolBox
 from .verification import Verifier
@@ -146,12 +146,21 @@ class Manager:
         msgs: list[dict[str, Any]] = [{"role": "user", "content": user}]
         invalid = tool_steps = 0
         while True:
-            chain = self._manager_chain(ticket_id)
+            full = self._manager_chain(ticket_id)
+            chain = usable(full)                 # models out of quota are skipped
+            if not chain:
+                return {"action": "escalate", "kind": "technical",
+                        "reason": "no usable model (all out of quota or limit): "
+                                  + "; ".join(f"{m}: {UNAVAILABLE.get(m, '')}" for m in full)[:600]}
             model = chain[min(invalid, len(chain) - 1)]
             if ticket_id and self.store.get_ticket(ticket_id)["status"] == "cancelled":
                 raise _Cancelled(ticket_id)
             self._status(ticket_id, "thinking", doing, model)
-            c = self.provider.complete(model=model, system=system, messages=msgs)
+            try:
+                c = self.provider.complete(model=model, system=system, messages=msgs)
+            except ModelUnavailable as e:
+                mark_unavailable(model, str(e))
+                continue
             self.store.record_usage(ticket_id, self.name, self.department, c, self._agent_id(ticket_id))
             if ticket_id and self.store.get_ticket(ticket_id)["status"] == "cancelled":
                 raise _Cancelled(ticket_id)

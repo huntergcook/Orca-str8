@@ -12,7 +12,7 @@ import json
 from typing import Any
 
 from .dsml import has_dsml, parse_dsml
-from .providers import Completion, Provider
+from .providers import Completion, ModelUnavailable, Provider, UNAVAILABLE, mark_unavailable, usable
 from .store import Store
 
 PROTOCOL = """\
@@ -183,13 +183,24 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
     # grows a bounded counter (invalid, refusals, tool_steps, done_rejects) or breaks, so this always terminates.
     while True:
         # Refusal retries stay on the same model; only capability failures advance the chain.
-        model = models[min(invalid, len(models) - 1)]
+        chain = usable(models)                   # models out of quota (subscription limit, no balance) are skipped
+        if not chain:
+            why = "; ".join(f"{m}: {UNAVAILABLE.get(m, '')}" for m in models)[:600]
+            status("escalated", "no usable model")
+            return store.escalate(ticket_id, actor, f"no usable model (all out of quota or limit): {why}",
+                                  kind="technical", to="top_manager")
+        model = chain[min(invalid, len(chain) - 1)]
         if store.get_ticket(ticket_id)["status"] == "cancelled":       # cancelled from above: stop, keep what was saved
             status("cancelled", "ticket cancelled")
             return store.get_ticket(ticket_id)
         calls += 1
         status("thinking", f"model call {calls}", model)
-        c = provider.complete(model=model, system=system, messages=messages)
+        try:
+            c = provider.complete(model=model, system=system, messages=messages)
+        except ModelUnavailable as e:            # e.g. a CLI subscription hit its limit: the next model takes over
+            mark_unavailable(model, str(e))
+            store.add_event(ticket_id, actor, "model_unavailable", {"model": model, "why": str(e)[:300]})
+            continue
         store.record_usage(ticket_id, actor, department, c, ticket_id)
         if store.get_ticket(ticket_id)["status"] == "cancelled":       # cancelled during the call: drop the reply
             status("cancelled", "ticket cancelled")

@@ -410,3 +410,31 @@ def test_cross_department_requests_can_wait_for_the_top_managers_approval(store,
     t = store.get_ticket(r["ticket_id"])
     assert t["status"] == "escalated" and t["escalation"]["to"] == "top_manager" and t["escalation"]["kind"] == "proposal"
     assert actions.retry(store, t["id"], "approved", "top_manager")["status"] == "in_progress"     # approve
+
+
+# ------------------------------------------------------------------------- a model out of quota is skipped, not fatal
+
+def test_a_model_that_hits_its_usage_limit_is_skipped_for_the_rest_of_the_run(store, tmp_path):
+    from orchestrator import providers
+    from orchestrator.providers import ModelUnavailable
+    providers.UNAVAILABLE.clear()
+
+    class Limited(Probe):
+        def complete(self, *, model, system, messages, max_tokens=16000):
+            if model == "cli-haiku":
+                self.calls.append({"model": model, "system": system, "messages": messages})
+                raise ModelUnavailable("claude exited with code 1: You've hit your 5-hour limit")
+            return super().complete(model=model, system=system, messages=messages, max_tokens=max_tokens)
+
+    p = Limited(delay=0)
+    m = Manager("research_manager", store, p, load_config(None), tmp_path, "role", ["cli-haiku", "flash"],
+                ["cli-haiku", "flash"])
+    try:
+        assert m.work(top(store))["status"] == "done"
+        assert "cli-haiku" in providers.UNAVAILABLE
+        assert sum(1 for c in p.calls if c["model"] == "cli-haiku") <= 2          # tried once (or racing workers), then skipped
+        tid = store.create_ticket({**SPEC, "title": "solo", "assignee": "worker:r-9"}, "m")["id"]
+        out = run_ticket(store, Limited(delay=0), tid, "w", "role", ["cli-haiku"])
+        assert out["status"] == "escalated" and "no usable model" in out["escalation"]["reason"]
+    finally:
+        providers.UNAVAILABLE.clear()
