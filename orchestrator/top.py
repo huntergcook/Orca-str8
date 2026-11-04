@@ -48,8 +48,9 @@ class TopManager:
         self.managers: dict[str, Manager] = {}
         for dept, spec in cfg["departments"].items():
             role_path = Path(spec.get("manager_role", ""))
-            role = (ROLES_DIR.parent / role_path).read_text(encoding="utf-8") if role_path.name and (
-                ROLES_DIR.parent / role_path).exists() else load_role("department_manager.template").replace(
+            found = next((c for c in (Path.cwd() / role_path, ROLES_DIR.parent / role_path)
+                          if role_path.name and c.is_file()), None)       # project file first, then built-in
+            role = found.read_text(encoding="utf-8") if found else load_role("department_manager.template").replace(
                 "{{DEPARTMENT}}", dept).replace("{{DEPARTMENT_MISSION}}", spec.get("mission", dept))
             is_verification = dept == "verification"
             diverse = bool(spec.get("diverse_models", False)) and len(verifier_models) > 1

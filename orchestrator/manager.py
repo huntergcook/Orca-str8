@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .agent import parse_reply, run_ticket, ticket_prompt
+from .agent import as_result, parse_reply, run_ticket, ticket_prompt
 from .memory import Memory
 from .providers import Provider
 from .store import Store, StoreError
@@ -47,9 +47,12 @@ straight to the human."""
 
 
 def load_role(name: str, default: str = "") -> str:
-    for p in (ROLES_DIR / f"{name}.md", ROLES_DIR / "workers" / f"{name}.md"):
-        if p.exists():
-            return p.read_text(encoding="utf-8")
+    """A role prompt by name. The project's own roles/ folder (the working directory) is searched first,
+    so a project can override or add roles; then the orchestrator's built-in roles/."""
+    for base in (Path.cwd() / "roles", ROLES_DIR):
+        for p in (base / f"{name}.md", base / "workers" / f"{name}.md"):
+            if p.exists():
+                return p.read_text(encoding="utf-8")
     return default or f"You are a focused {name.replace('_', ' ')} worker. Do exactly what the ticket asks."
 
 
@@ -145,7 +148,7 @@ class Manager:
             self.memory.append_journal(f"[{ticket_id}] {d['notes']}")
         if a == "done":
             self._close_children(ticket_id)
-            self.store.transition(ticket_id, "done", self.name, result=d.get("result") or {})
+            self.store.transition(ticket_id, "done", self.name, result=as_result(d.get("result")))
         elif a == "fail":
             self._close_children(ticket_id)
             self.store.transition(ticket_id, "failed", self.name, note=str(d.get("reason", "")))

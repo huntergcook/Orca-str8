@@ -27,6 +27,16 @@ return only a short summary and the file path in "result". Never put a long docu
 Match your effort to the ticket's rigor level."""
 
 
+def as_result(value: Any) -> dict[str, Any]:
+    """Tickets store results as JSON objects. Models sometimes return a bare string (e.g. a whole markdown
+    report) or a list; wrap it instead of failing the ticket and losing the work."""
+    if value is None or value == "":
+        return {}
+    if isinstance(value, dict):
+        return value
+    return {"text": value} if isinstance(value, str) else {"value": value}
+
+
 def parse_reply(text: str, key: str = "action") -> dict[str, Any] | None:
     """Extract the first balanced JSON object that has `key` (default 'action')."""
     start = text.find("{")
@@ -177,7 +187,7 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
                 break
             continue
         if action == "done":
-            return store.transition(ticket_id, "done", actor, result=reply.get("result") or {})
+            return store.transition(ticket_id, "done", actor, result=as_result(reply.get("result")))
         if action == "ask":
             return store.ask_question(ticket_id, actor, str(reply.get("question", "")))
         if action == "escalate":

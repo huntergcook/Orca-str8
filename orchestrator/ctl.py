@@ -8,7 +8,7 @@ files and SQLite, so a fresh session can resume with `resume`.
     python -m orchestrator.ctl [--config PATH] <command> [args]      (JSON on stdout)
 
 Commands: resume | board | ticket ID | create [--file F | stdin JSON] | run | watch | answer ID TEXT |
-          retry ID [TEXT] | cancel ID [TEXT] | handoff ID [TEXT] | recover | human TEXT | models ... |
+          retry ID [TEXT] | cancel ID [TEXT] | handoff ID [TEXT] | recover | human TEXT | models ... | add-resource NAME [NOTE] | safe-to-stop NAME NOTE |
           release-resource NAME [REASON] | state [--set (stdin)] | log TEXT | finish SUMMARY | pause | unpause
 """
 from __future__ import annotations
@@ -233,6 +233,15 @@ class Ctl:
     def recover(self) -> dict[str, Any]:
         return self.recovery(apply=True)
 
+    def add_resource(self, name: str, safe_to_stop: str = "") -> dict[str, Any]:
+        """Declare a piece of hardware so workers can claim it (the Experiment department's resource table)."""
+        self.store.register_resource(name, safe_to_stop)
+        return {"resources": [r["name"] for r in self.store.list_resources()]}
+
+    def set_safe_to_stop(self, name: str, note: str) -> dict[str, Any]:
+        self.store.set_safe_to_stop(name, note, actor="top_manager")
+        return {"resource": name, "safe_to_stop": note}
+
     def release_resource(self, name: str, reason: str) -> dict[str, Any]:
         """Explicitly free a hardware resource after a human has confirmed its physical state."""
         self.store.force_release_resource(name, "top_manager", reason or "released after recovery")
@@ -366,6 +375,12 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
     m.add_argument("--cli", choices=sorted(CLI_PRESETS))
     m.add_argument("--fallback", action="append", help="provider:model (repeatable)")
     m.add_argument("--clear-fallback", action="store_true")
+    ar = sub.add_parser("add-resource")
+    ar.add_argument("name")
+    ar.add_argument("safe_to_stop", nargs="?", default="")
+    ss = sub.add_parser("safe-to-stop")
+    ss.add_argument("name")
+    ss.add_argument("note")
     rr = sub.add_parser("release-resource")
     rr.add_argument("name")
     rr.add_argument("reason", nargs="?", default="")
@@ -397,6 +412,10 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
             out = ctl.log(a.text)
         elif a.cmd == "human":
             out = ctl.human_said(a.text)
+        elif a.cmd == "add-resource":
+            out = ctl.add_resource(a.name, a.safe_to_stop)
+        elif a.cmd == "safe-to-stop":
+            out = ctl.set_safe_to_stop(a.name, a.note)
         elif a.cmd == "release-resource":
             out = ctl.release_resource(a.name, a.reason)
         elif a.cmd == "finish":

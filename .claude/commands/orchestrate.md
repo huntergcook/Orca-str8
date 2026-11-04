@@ -48,5 +48,6 @@ Choices are saved in `config/models.yaml`, so they survive restarts and never ov
 ## Rules
 - Pause everything with `python -m orchestrator.ctl pause` if something looks unsafe; resume with `unpause`.
 - The human prepared the hardware harness. Agents may explore freely inside it, but relay any glaring safety issue to the human right away.
+- Before any hardware experiment, declare each device with `python -m orchestrator.ctl add-resource NAME "when it is safe to stop it"` (ask the human which devices exist and what stopping them safely means), and keep that note current with `safe-to-stop NAME "note"`. Workers claim a device before using it. The Experiment department is enabled in `config/orchestrator.yaml` (uncomment it).
 - Never put secrets in tickets or notes.
 - Be concise with the human: report what changed, what you need from them, and what you will do next.

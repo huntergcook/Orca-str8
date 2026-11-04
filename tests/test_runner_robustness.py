@@ -62,3 +62,23 @@ def test_raw_newlines_and_tabs_inside_strings_are_accepted():
 
 def test_protocol_tells_workers_to_keep_replies_small():
     assert "write_file" in PROTOCOL and "SMALL" in PROTOCOL
+
+
+def test_a_bare_string_result_is_wrapped_not_a_crash(store):
+    tid = mk(store)
+    t = run_ticket(store, MockProvider([j(action="done", result="# Report\nfull markdown here")]), tid, "w", "r", ["m"])
+    assert t["status"] == "done" and t["result"] == {"text": "# Report\nfull markdown here"}
+    t2 = run_ticket(store, MockProvider([j(action="done", result=["a", "b"])]), mk(store), "w", "r", ["m"])
+    assert t2["result"] == {"value": ["a", "b"]}
+
+
+def test_manager_can_finish_with_a_string_result(store, tmp_path):
+    from orchestrator.config import load_config
+    from orchestrator.manager import Manager
+    m = Manager("research_manager", store, MockProvider([j(action="done", result="plain text report")]),
+                load_config(None), tmp_path, "role", ["m"], ["w"])
+    top = store.create_ticket(dict(title="T", assignee="research_manager", worker_role="w", context="c",
+                                   acceptance_criteria=["a"], return_spec={"format": "f", "description": "d"}),
+                              actor="top_manager")["id"]
+    t = m.work(top)
+    assert t["status"] == "done" and t["result"] == {"text": "plain text report"}

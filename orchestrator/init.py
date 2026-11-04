@@ -79,7 +79,8 @@ Project run by the orchestrator at `{orch}`.
 1. Copy `.env.example` to `.env` and add your `DEEPSEEK_API_KEY`.
 2. Pre-flight: `python -m orchestrator.smoke`
 3. Dashboard (second terminal): `python -m orchestrator.dashboard` then open http://127.0.0.1:8080
-4. Start Claude Code in this folder (`claude`) and type `/orchestrate <what you want done>`.
+4. Start your agent in this folder: Claude Code (`claude`, then `/orchestrate <what you want done>`) or Codex (`codex`, then "act as the orchestrator top manager: <what you want done>"; it reads AGENTS.md).
+5. No API keys? Run `python -m orchestrator.ctl models use-cli codex` (or `claude`) to run every role on that CLI.
 
 State lives in `workspace/` (database, memory notes, tool library, jobs, reports).
 Create `workspace/PAUSE` to halt all model calls; delete it to resume.
@@ -144,6 +145,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(prog="orchestrator.init")
     ap.add_argument("target")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--use-cli", choices=["claude", "codex"],
+                    help="run every manager/worker/verifier on this CLI (no API key needed) instead of DeepSeek")
     a = ap.parse_args()
     try:
         written = scaffold(a.target, a.force)
@@ -152,6 +155,10 @@ def main() -> int:
         return 1
     for p in written:
         print(f"created {p}")
+    if a.use_cli:
+        from .modelcfg import use_cli
+        use_cli(Path(a.target) / "config" / "orchestrator.yaml", a.use_cli)
+        print(f"models: every manager, worker and verifier now runs on the {a.use_cli} CLI (config/models.yaml)")
     print(f"\nNext: add DEEPSEEK_API_KEY to {Path(a.target) / '.env'} (copy .env.example), then run "
           "`python -m orchestrator.smoke` from that folder.")
     return 0
