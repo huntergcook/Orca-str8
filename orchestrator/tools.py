@@ -156,6 +156,9 @@ class ToolBox:
     ACQUIRE_ONLY = {"search_github", "acquire_git", "register_tool", "pypi_info", "pip_install"}
     HARDWARE_ONLY = {"claim_resource", "release_resource", "heartbeat_resource", "start_job", "stop_job"}
 
+    def has_tool(self, name: Any) -> bool:
+        return isinstance(name, str) and bool(name) and hasattr(self, f"_t_{name}")
+
     def call(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
             fn = getattr(self, f"_t_{tool}", None)

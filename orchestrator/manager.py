@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from . import actions
-from .agent import as_result, compact, parse_reply, run_ticket, ticket_prompt
+from .agent import as_result, as_tool_call, compact, parse_reply, run_ticket, ticket_prompt
 from .codework import (CodeError, CodeSpec, CodeToolBox, branch_state, code_repo_from_cfg, format_gate_failures,
                        glob_match, rework_spec, run_gates)
 from .config import project_rules
@@ -164,6 +164,7 @@ class Manager:
                                {"role": "user", "content": "Invalid reply. Respond with exactly one JSON object."}]
                 continue
             invalid = 0
+            reply = as_tool_call(reply, box)            # {"action": "read_file", ...} means that tool
             if reply.get("action") != "tool":
                 return reply
             tool_steps += 1
@@ -571,7 +572,8 @@ class Manager:
                 continue
             if not children:
                 d = self._decide(f"# Your ticket\n{ticket_prompt(t)}\n\nPlan the work. Independent pieces run in parallel, "
-                                 "so split work that can proceed side by side into separate worker tickets.",
+                                 "so split work that can proceed side by side into separate worker tickets."
+                                 + (f"\n\n# IMPORTANT\n{self._notice.pop(ticket_id)}" if ticket_id in self._notice else ""),
                                  ticket_id, "planning")
             else:
                 d = self._decide(f"# Your ticket\n{ticket_prompt(t)}\n\n# Worker results\n"
@@ -617,8 +619,12 @@ class Manager:
                     self.memory.append_journal(f"[{ticket_id}] {d['notes']}")
                 continue
             if not self._apply(ticket_id, d):
-                self.store.escalate(ticket_id, self.name, f"unknown action {d.get('action')!r} from the manager model",
-                                    kind="technical")
+                # a protocol slip, not a reason to bother the level above: say what is valid and let it decide again
+                self._notice[ticket_id] = (f"{d.get('action')!r} is not an action. Use one of: delegate, integrate, "
+                                           "retry_workers, done, ask, escalate, fail; or {\"action\": \"tool\", "
+                                           "\"tool\": NAME, \"args\": {...}} to use a tool.")
+                self.memory.append_journal(f"[{ticket_id}] invalid manager action {d.get('action')!r}")
+                continue
             break
         return self._settle(ticket_id)
 

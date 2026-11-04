@@ -124,6 +124,17 @@ def compact(messages: list[dict[str, Any]], max_chars: int = 60000, keep_last: i
     return messages
 
 
+def as_tool_call(reply: dict[str, Any], toolbox: Any | None) -> dict[str, Any]:
+    """Models sometimes put a tool's name in "action" ({"action": "read_file", "args": {...}}): treat it as that tool call."""
+    action = reply.get("action")
+    if action != "tool" and toolbox is not None and getattr(toolbox, "has_tool", None) and toolbox.has_tool(action):
+        args = reply.get("args")
+        if not isinstance(args, dict):
+            args = {k: v for k, v in reply.items() if k not in ("action", "tool")}
+        return {"action": "tool", "tool": action, "args": args}
+    return reply
+
+
 def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, role_text: str,
                models: list[str], capability_retry_limit: int = 3, toolbox: Any | None = None,
                max_tool_steps: int = 40, on_done: Any | None = None, extra_context: str = "",
@@ -199,6 +210,8 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
         reply = parse_reply(c.text, allow_dsml=True)
         if reply is not None and "DSML" in c.text and not c.text.lstrip().startswith("{"):
             store.add_event(ticket_id, actor, "reply_normalized", {"from": "dsml", "tool": reply.get("tool")})
+        if reply is not None:
+            reply = as_tool_call(reply, toolbox)
         if reply is None:
             invalid += 1
             # Keep a sample of the bad reply so failures can be diagnosed afterwards.

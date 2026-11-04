@@ -325,3 +325,34 @@ def test_cancelling_a_running_ticket_stops_its_manager_and_workers(store, tmp_pa
     n = len(p.calls)
     time.sleep(0.3)
     assert len(p.calls) == n                                                    # nobody keeps calling the model
+
+
+# ------------------------------------------------------------------------- protocol slips are corrected, not escalated
+
+def test_a_tool_name_used_as_the_action_is_run_as_that_tool(store, tmp_path):
+    (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+    seen = []
+
+    def lead(first, msgs):
+        if len(msgs) == 1:
+            return j(action="list_dir", args={"path": "."})              # a tool name in "action"
+        seen.append(msgs[-1]["content"])
+        return j(action="done", result={"report": "ok"})
+
+    m = Manager("research_manager", store, Probe(delay=0, lead=lead), load_config(None), tmp_path, "role", ["m"], ["w"])
+    assert m.work(top(store))["status"] == "done"
+    assert seen and seen[0].startswith("Tool result:") and '"ok": true' in seen[0]
+
+
+def test_an_unknown_manager_action_gets_feedback_instead_of_an_escalation(store, tmp_path):
+    calls = []
+
+    def lead(first, msgs):
+        calls.append(first)
+        if len(calls) == 1:
+            return j(action="ponder")
+        assert "is not an action" in first
+        return j(action="done", result={"report": "ok"})
+
+    m = Manager("research_manager", store, Probe(delay=0, lead=lead), load_config(None), tmp_path, "role", ["m"], ["w"])
+    assert m.work(top(store))["status"] == "done"
