@@ -86,9 +86,19 @@ Create `workspace/PAUSE` to halt all model calls; delete it to resume.
 """
 
 
-def command_text() -> str:
+def command_text(project: str | Path | None = None) -> str:
+    """The /orchestrate command. With `project`, every ctl command carries --project <abs path>, so the
+    work is bound to that folder even if the session's working directory drifts."""
     src = (ORCH_HOME / ".claude" / "commands" / "orchestrate.md").read_text(encoding="utf-8")
-    return src.replace("`roles/top_manager.md`", f"`{ORCH_HOME / 'roles' / 'top_manager.md'}`")
+    src = src.replace("`roles/top_manager.md`", f"`{ORCH_HOME / 'roles' / 'top_manager.md'}`")
+    if project is not None:
+        proj = str(Path(project).resolve())
+        src = src.replace("python -m orchestrator.ctl", f'python -m orchestrator.ctl --project "{proj}"')
+        src = src.replace("workspace/run.log", f'"{Path(proj).as_posix()}/workspace/run.log"')
+        src = src.replace("python -m orchestrator.dashboard", f'python -m orchestrator.dashboard --project "{proj}"')
+        src = src.replace("**Always run every `ctl` command from the project folder, which is this session's working directory.",
+                          f"**This project is `{proj}`; every `ctl` command below already carries `--project` so all work stays inside it.")
+    return src
 
 
 def scaffold(target: str | Path, force: bool = False) -> list[Path]:
@@ -100,7 +110,7 @@ def scaffold(target: str | Path, force: bool = False) -> list[Path]:
         ".env.example": ENV_EXAMPLE,
         ".gitignore": GITIGNORE,
         "README.md": README.format(name=root.name, orch=ORCH_HOME),
-        ".claude/commands/orchestrate.md": command_text(),
+        ".claude/commands/orchestrate.md": command_text(root),
     }
     written = []
     for rel, text in files.items():

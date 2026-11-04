@@ -12,6 +12,7 @@ from .agent import parse_reply
 from .config import model_chain
 from .manager import ROLES_DIR, Manager, load_role
 from .hardware import JobRunner
+from .limits import Halted
 from .memory import Memory, human_log
 from .providers import Provider
 from .store import Store
@@ -145,7 +146,22 @@ class TopManager:
             for m in self.managers.values():
                 for status in ("open", "in_progress"):
                     for t in self.store.list_tickets(status=status, assignee=m.name):
-                        m.work(t["id"])
+                        try:
+                            m.work(t["id"])
+                        except Halted:
+                            raise                      # pause / budget: stop the whole run cleanly
+                        except Exception as e:         # provider outage, bad key, bug: never fail silently
+                            self._work_failed(t["id"], m.name, e)
                         ran = True
             if not ran:
                 break
+
+    def _work_failed(self, ticket_id: str, actor: str, err: Exception) -> None:
+        """A manager crashed mid-ticket. Escalate it and its unfinished workers so the failure is
+        visible (Needs human) instead of leaving tickets stuck 'in_progress'."""
+        note = f"run error: {type(err).__name__}: {err}"[:500]
+        self.store.add_event(ticket_id, actor, "run_error", {"error": note})
+        kids = self.store.list_tickets(parent_id=ticket_id)
+        for t in [*kids, self.store.get_ticket(ticket_id)]:
+            if t["status"] in ("open", "in_progress", "needs_clarification", "blocked"):
+                self.store.transition(t["id"], "escalated", actor, note=note)

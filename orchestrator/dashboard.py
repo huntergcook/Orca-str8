@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
-from .config import load_config
+from .config import enter_project, load_config
 
 STATIC = Path(__file__).parent / "static" / "index.html"
 ACTIVE = ("in_progress", "needs_clarification", "blocked", "escalated")
@@ -134,12 +134,14 @@ def create_app(db_path: str | Path, cfg: dict[str, Any] | None = None) -> FastAP
 def main() -> None:
     import uvicorn
     ap = argparse.ArgumentParser(prog="orchestrator.dashboard")
+    ap.add_argument("--project", help="project folder (default: $ORCHESTRATOR_PROJECT or the current directory)")
     ap.add_argument("--config", default="config/orchestrator.yaml")
     ap.add_argument("--db", default=None)
     ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--open", action="store_true", help="open the dashboard in your browser")
     ap.add_argument("--demo", action="store_true", help="serve a temporary database filled with sample data")
     a = ap.parse_args()
+    enter_project(a.project)
     cfg = load_config(a.config)
     db = a.db or Path(cfg["workspace"]) / "orchestrator.db"
     if a.demo:

@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
-from .config import load_config
+import psutil
+
+from .config import enter_project, load_config, model_chain
 from .hardware import hardware_brief
 from .limits import GuardedProvider, Halted
 from .memory import human_log
@@ -26,10 +29,13 @@ from .providers import Provider, build_provider
 from .store import Store, StoreError
 from .top import TopManager
 
+ORCH_HOME = Path(__file__).resolve().parents[1]
+
 
 class Ctl:
     def __init__(self, cfg: dict[str, Any], workspace: str | Path, provider: Provider | None = None) -> None:
         self.cfg, self.workspace = cfg, Path(workspace)
+        self._custom_provider = provider is not None     # tests inject mocks: no real keys needed
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.store = Store(self.workspace / "orchestrator.db")
         self.provider = GuardedProvider(provider or build_provider(cfg), self.store, cfg, self.workspace)
@@ -64,7 +70,8 @@ class Ctl:
                 ev = [e for e in self.store.events(t["id"]) if e["type"] in ("status_changed", "refusal_escalated")]
                 attention.append({**self._row(t), "level": "top" if t["parent_id"] is None else "worker",
                                   "why": (ev[-1]["payload"].get("note") or ev[-1]["payload"]) if ev else ""})
-        return {"tickets": rows, "needs_attention": attention, "halted": self._halt_reason()}
+        return {"tickets": rows, "needs_attention": attention, "halted": self._halt_reason(),
+                "run_active": self.run_active()}
 
     def ticket(self, ticket_id: str) -> dict[str, Any]:
         t = self.store.get_ticket(ticket_id)
@@ -87,7 +94,7 @@ class Ctl:
                 "human_log_tail": log.read_text(encoding="utf-8")[-3000:] if log.exists() else "",
                 "hardware": hardware_brief(self.store) or "(none)",
                 "finished": (self.workspace / "FINISHED").exists(),
-                **self.board()}
+                "missing_keys": self.missing_keys(), **self.where(), **self.board()}
 
     # ------------------------------------------------------------------ acting
 
@@ -98,8 +105,63 @@ class Ctl:
             raise StoreError(f"unknown department {spec.get('department')!r}; have {list(self.top.managers)}")
         return {"ticket_id": tid}
 
+    # ---------------------------------------------------------- run safety
+
+    @property
+    def lock_path(self) -> Path:
+        return self.workspace / "RUNNING"
+
+    def run_active(self) -> bool:
+        """True if a `run` process is alive (the lock file holds a live pid)."""
+        try:
+            pid = int(self.lock_path.read_text())
+        except (OSError, ValueError):
+            return False
+        return psutil.pid_exists(pid)
+
+    def missing_keys(self) -> list[str]:
+        """API key variables the configured models need but the environment lacks."""
+        if self._custom_provider:
+            return []
+        provider = build_provider(self.cfg)
+        models: list[str] = []
+        for tier in ("manager", "worker"):
+            if self.cfg["models"][tier].get("provider") != "external":
+                models += model_chain(self.cfg, tier)
+        if self.cfg["verification"].get("enabled"):
+            models += list(self.cfg["verification"].get("verifier_models") or [])
+        need: list[str] = []
+        for m in dict.fromkeys(models):
+            name = provider.provider_name(m)
+            var = self.cfg["providers"].get(name, {}).get("api_key_env")
+            if var and not os.environ.get(var) and var not in need:
+                need.append(var)
+        return need
+
+    def where(self) -> dict[str, Any]:
+        ws = self.workspace.resolve()
+        info: dict[str, Any] = {"workspace": str(ws), "cwd": str(Path.cwd())}
+        if ORCH_HOME in ws.parents:
+            info["warning"] = ("this workspace is inside the orchestrator repo itself; run ctl from your "
+                               "project folder (where your config/orchestrator.yaml and .env live)")
+        return info
+
     def run(self) -> dict[str, Any]:
         """Run department managers on all open/in-progress tickets. May take a long time."""
+        miss = self.missing_keys()
+        if miss:
+            raise StoreError(f"missing API key(s): {', '.join(miss)}. Put them in {Path.cwd() / '.env'} or the "
+                             f"environment. Working dir: {Path.cwd()}; workspace: {self.workspace.resolve()}")
+        if self.run_active():
+            raise StoreError(f"a run is already active (pid {self.lock_path.read_text().strip()}); "
+                             "watch `board` instead of starting another")
+        self.lock_path.write_text(str(os.getpid()))
+        try:
+            return self._run()
+        finally:
+            self.lock_path.unlink(missing_ok=True)
+
+    def _run(self) -> dict[str, Any]:
         before = {t["id"]: t["status"] for t in self.store.list_tickets()}
         halted = None
         try:
@@ -147,6 +209,7 @@ class Ctl:
 
 def main(argv: list[str] | None = None, provider: Provider | None = None) -> int:
     ap = argparse.ArgumentParser(prog="orchestrator.ctl")
+    ap.add_argument("--project", help="project folder (default: $ORCHESTRATOR_PROJECT or the current directory)")
     ap.add_argument("--config", default="config/orchestrator.yaml")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("resume", "board", "run", "pause", "unpause"):
@@ -164,6 +227,11 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
     sub.add_parser("finish").add_argument("summary")
     a = ap.parse_args(argv)
 
+    try:
+        enter_project(a.project)
+    except FileNotFoundError as e:
+        print(json.dumps({"error": str(e)}))
+        return 1
     cfg = load_config(a.config)
     ctl = Ctl(cfg, cfg["workspace"], provider)
     try:

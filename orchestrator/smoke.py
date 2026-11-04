@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .config import load_config, model_chain
+from .config import enter_project, load_config, model_chain
 from .providers import build_provider
 
 
@@ -24,8 +24,10 @@ def configured_models(cfg: dict) -> list[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(prog="orchestrator.smoke")
+    ap.add_argument("--project", help="project folder (default: $ORCHESTRATOR_PROJECT or the current directory)")
     ap.add_argument("--config", default="config/orchestrator.yaml")
     args = ap.parse_args()
+    enter_project(args.project)
     cfg = load_config(args.config)
     models = configured_models(cfg)
     print(f"Checking {len(models)} model(s) from {args.config}: {', '.join(models)}")

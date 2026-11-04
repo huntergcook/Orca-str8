@@ -117,3 +117,68 @@ def test_smoke_skips_external_tier():
     cfg["models"]["worker"] = {"provider": "deepseek", "model": "deepseek-flash"}
     cfg["verification"]["verifier_models"] = ["deepseek-v4-pro", "deepseek-flash"]
     assert configured_models(cfg) == ["deepseek-v4-pro", "deepseek-flash"]
+
+
+# ---- robustness: crashes must be visible, keys checked up front, runs locked -------------
+
+def test_provider_crash_escalates_instead_of_hanging(tmp_path):
+    # MockProvider with an empty script raises mid-run, like a bad key or API outage would.
+    ctl, _ = make(tmp_path, [j(action="delegate", tickets=[WORKER])])     # then the worker call explodes
+    tid = ctl.create(SPEC)["ticket_id"]
+    out = ctl.run()                                    # must return, not raise
+    row = next(t for t in out["tickets"] if t["id"] == tid)
+    assert row["status"] == "escalated"
+    kids = ctl.ticket(tid)["children"]
+    assert kids and all(k["status"] == "escalated" for k in kids)
+    assert any(e["type"] == "run_error" for e in ctl.ticket(tid)["events"])
+    why = [a["why"] for a in out["needs_attention"] if a["id"] == tid][0]
+    assert "run error" in str(why)
+    ctl.close()
+
+
+def test_missing_key_fails_fast_with_location(tmp_path, monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    cfg = load_config(None)
+    cfg["departments"] = {"research": {}}
+    cfg["models"]["top"] = {"provider": "external", "model": "claude-code"}
+    cfg["models"]["manager"] = {"provider": "deepseek", "model": "deepseek-v4-pro"}
+    cfg["models"]["worker"] = {"provider": "deepseek", "model": "deepseek-flash"}
+    cfg["verification"]["enabled"] = False
+    ctl = Ctl(cfg, tmp_path)                            # real (unused) provider: key check applies
+    assert ctl.missing_keys() == ["DEEPSEEK_API_KEY"]
+    assert ctl.resume()["missing_keys"] == ["DEEPSEEK_API_KEY"]
+    ctl.create(SPEC)
+    with pytest.raises(Exception, match=r"missing API key.*DEEPSEEK_API_KEY.*.env"):
+        ctl.run()
+    assert ctl.store.list_tickets()[0]["status"] == "open"       # nothing was started
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "x")
+    assert ctl.missing_keys() == []
+    ctl.close()
+
+
+def test_run_lock_blocks_second_run_and_clears(tmp_path):
+    import os
+    ctl, _ = make(tmp_path, [j(action="done", result={})])
+    ctl.create(SPEC)
+    ctl.lock_path.write_text(str(os.getpid()))          # pretend a live run owns the lock
+    assert ctl.board()["run_active"] is True
+    with pytest.raises(Exception, match="already active"):
+        ctl.run()
+    ctl.lock_path.write_text("999999999")               # stale lock from a dead process
+    assert ctl.board()["run_active"] is False
+    ctl.run()
+    assert not ctl.lock_path.exists() and ctl.board()["run_active"] is False
+    ctl.close()
+
+
+def test_resume_warns_when_workspace_is_inside_orchestrator_repo():
+    from orchestrator.ctl import ORCH_HOME
+    cfg = load_config(None)
+    cfg["departments"] = {"research": {}}
+    ctl = Ctl(cfg, ORCH_HOME / "workspace_test_tmp", MockProvider([]))
+    try:
+        assert "orchestrator repo" in ctl.resume()["warning"]
+    finally:
+        ctl.close()
+        import shutil
+        shutil.rmtree(ORCH_HOME / "workspace_test_tmp", ignore_errors=True)

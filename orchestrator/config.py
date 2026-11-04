@@ -69,6 +69,20 @@ def load_dotenv(path: str | Path) -> list[str]:
     return set_names
 
 
+def enter_project(project: str | Path | None = None) -> Path | None:
+    """Make `project` (or $ORCHESTRATOR_PROJECT) the working directory, so config, .env, the workspace
+    and every relative path resolve inside the project folder no matter where the process was started."""
+    import os
+    project = project or os.environ.get("ORCHESTRATOR_PROJECT")
+    if not project:
+        return None
+    p = Path(project).expanduser().resolve()
+    if not p.is_dir():
+        raise FileNotFoundError(f"project folder not found: {p}")
+    os.chdir(p)
+    return p
+
+
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
     # Look for .env in the working directory and next to the config's parent (the repo root).
     load_dotenv(Path.cwd() / ".env")
