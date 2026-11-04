@@ -29,6 +29,8 @@ from .util import atomic_write
 
 PIP_SPEC_RE = re.compile(r"^[A-Za-z0-9]\S*$")  # no shell is used; this blocks option injection and spaces
 PROTECTED = ("memory", "orchestrator.db", "PAUSE", "jobs")
+SECRET_FILE_RE = re.compile(r"(^\.env(\..*)?$)|(\.(pem|key|pfx|p12)$)|(^id_(rsa|ed25519|ecdsa)|^credentials|^secrets?\.)", re.I)
+SECRET_ALLOWED = {".env.example", ".env.sample", ".env.template"}
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 LICENSE_FILES = ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING", "UNLICENSE")
 
@@ -105,8 +107,10 @@ class ToolBox:
                  git: Callable[..., str] = _default_git, allow_local_git: bool = False,
                  ticket_id: str | None = None, can_use_hardware: bool = False,
                  jobs: JobRunner | None = None,
-                 run_cmd: Callable[..., tuple[int, str, str]] = _default_run) -> None:
+                 run_cmd: Callable[..., tuple[int, str, str]] = _default_run,
+                 read_roots: list[str] | None = None) -> None:
         self.workspace = Path(workspace)
+        self.read_roots = [Path(r).expanduser().resolve() for r in (read_roots or [])]
         self.registry = ToolRegistry(workspace)
         self.actor, self.can_acquire, self.store = actor, can_acquire, store
         self.tooling_assignee = tooling_assignee
@@ -119,7 +123,11 @@ class ToolBox:
                  "- search_registry {query}: find existing tools. ALWAYS try this before building or requesting anything.",
                  "- request_tool {title, need, acceptance_criteria?}: ask the Tooling department for a tool."]
         lines += ["- read_file {path} / write_file {path, content}: files inside the workspace (relative paths).",
-                  "- run_python {script, args?, timeout?}: run a workspace Python script now (tool venv if present) and get its output."]
+                  "- run_python {script, args?, timeout?}: run a workspace Python script now (tool venv if present) and get its output.",
+                  "- list_dir {path}: list a directory (workspace-relative, or absolute under a read root)."]
+        if self.read_roots:
+            lines.append("  Read-only project folders you may study with list_dir and read_file (absolute paths): "
+                         + ", ".join(str(r) for r in self.read_roots) + ". You cannot write there; save your output in the workspace. Secret files are blocked.")
         if self.can_use_hardware and self.jobs:
             lines += ["Hardware (Experiment department). Prefer an automated Python tool that runs the whole sweep over driving hardware by hand; then oversee it:",
                       "- list_resources {}: hardware flags. claim_resource {name, expected_duration} BEFORE touching a resource; release_resource {name} when done.",
@@ -211,8 +219,34 @@ class ToolBox:
                 raise ToolError(f"{parts[0]} is managed by the orchestrator and cannot be written")
         return p
 
+    def _read_path(self, raw: str) -> Path:
+        """A path to READ: relative paths are inside the workspace; absolute paths must be inside a configured
+        read root (a project repo the workers may study but not change). Secret files are never readable."""
+        if not Path(str(raw)).is_absolute():
+            p = self._safe_path(raw)
+        else:
+            p = Path(str(raw)).expanduser().resolve()
+            if not any(r == p or r in p.parents for r in self.read_roots + [self.workspace.resolve()]):
+                raise ToolError(f"{raw} is outside the workspace and the configured read roots")
+        if p.name.lower() not in SECRET_ALLOWED and SECRET_FILE_RE.search(p.name):
+            raise ToolError(f"{p.name} looks like a secrets file and is never readable by agents")
+        return p
+
+    def _t_list_dir(self, a: dict[str, Any]) -> dict[str, Any]:
+        p = self._read_path(str(a.get("path", ".")))
+        if not p.is_dir():
+            raise ToolError(f"not a directory: {a.get('path')}")
+        entries = []
+        for child in sorted(p.iterdir(), key=lambda c: (c.is_file(), c.name.lower()))[:300]:
+            hidden = child.is_file() and child.name.lower() not in SECRET_ALLOWED and SECRET_FILE_RE.search(child.name)
+            if hidden or child.name == ".git":
+                continue
+            entries.append({"name": child.name + ("/" if child.is_dir() else ""),
+                            "bytes": child.stat().st_size if child.is_file() else None})
+        return {"path": str(p), "entries": entries}
+
     def _t_read_file(self, a: dict[str, Any]) -> dict[str, Any]:
-        p = self._safe_path(a["path"])
+        p = self._read_path(a["path"])
         if not p.is_file():
             raise ToolError(f"not a file: {a['path']}")
         text = p.read_text(encoding="utf-8", errors="replace")

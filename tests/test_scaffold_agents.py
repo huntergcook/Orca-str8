@@ -11,8 +11,8 @@ def test_scaffold_writes_agents_md_for_codex_and_binds_the_project(tmp_path):
     assert "argument-hint" not in agents and "$ARGUMENTS" not in agents          # slash-command bits removed
     assert "whatever they ask you next" in agents
     assert "Choosing models" in agents and "use-cli codex" in agents
-    assert f'python -m orchestrator.ctl --project "{proj}" models' in agents      # every command bound to the project
-    assert f'python -m orchestrator.smoke --project "{proj}"' in agents
+    assert f'python -P -m orchestrator.ctl --project "{proj}" models' in agents      # every command bound to the project
+    assert f'python -P -m orchestrator.smoke --project "{proj}"' in agents
 
 
 def test_claude_command_and_agents_md_share_the_same_instructions(tmp_path):

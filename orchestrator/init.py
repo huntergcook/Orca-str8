@@ -94,10 +94,12 @@ def command_text(project: str | Path | None = None) -> str:
     src = src.replace("`roles/top_manager.md`", f"`{ORCH_HOME / 'roles' / 'top_manager.md'}`")
     if project is not None:
         proj = str(Path(project).resolve())
-        src = src.replace("python -m orchestrator.ctl", f'python -m orchestrator.ctl --project "{proj}"')
+        # -P: do not put the working directory on sys.path, so a project that has its own top-level
+        # "orchestrator" package cannot shadow this one
+        src = src.replace("python -m orchestrator.ctl", f'python -P -m orchestrator.ctl --project "{proj}"')
         src = src.replace("workspace/run.log", f'"{Path(proj).as_posix()}/workspace/run.log"')
-        src = src.replace("python -m orchestrator.smoke", f'python -m orchestrator.smoke --project "{proj}"')
-        src = src.replace("python -m orchestrator.dashboard", f'python -m orchestrator.dashboard --project "{proj}"')
+        src = src.replace("python -m orchestrator.smoke", f'python -P -m orchestrator.smoke --project "{proj}"')
+        src = src.replace("python -m orchestrator.dashboard", f'python -P -m orchestrator.dashboard --project "{proj}"')
         src = src.replace("**Always run every `ctl` command from the project folder, which is this session's working directory.",
                           f"**This project is `{proj}`; every `ctl` command below already carries `--project` so all work stays inside it.")
     return src

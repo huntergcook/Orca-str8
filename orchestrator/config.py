@@ -9,6 +9,8 @@ import yaml
 
 DEFAULTS: dict[str, Any] = {
     "workspace": "./workspace",
+    "rules_file": None,          # path (relative to the project) of rules every agent must obey; injected into all prompts
+    "read_roots": [],            # project folders workers may read (never write); secrets are always blocked
     "providers": {
         "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
         "deepseek": {"api_key_env": "DEEPSEEK_API_KEY", "base_url": "https://api.deepseek.com",
@@ -102,6 +104,19 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         over = yaml.safe_load(overlay.read_text()) or {}
         cfg = _merge(cfg, {k: v for k, v in over.items() if k in ("models", "verification", "providers")})
     return cfg
+
+
+def project_rules(cfg: dict[str, Any]) -> str:
+    """The project's mandatory rules (legal, safety, house rules), read fresh each call so edits apply at once.
+    Empty if `rules_file` is unset or unreadable."""
+    name = cfg.get("rules_file")
+    if not name:
+        return ""
+    p = Path(name) if Path(name).is_absolute() else Path.cwd() / name
+    try:
+        return p.read_text(encoding="utf-8").strip()[:8000]
+    except OSError:
+        return ""
 
 
 def overlay_path(config_path: str | Path) -> Path:

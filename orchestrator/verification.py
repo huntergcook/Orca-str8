@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .agent import parse_reply, ticket_prompt
+from .config import project_rules
 from .hardware import resolve_in_workspace
 from .providers import Provider
 from .store import Store, StoreError
@@ -101,7 +102,10 @@ class Verifier:
     # ----------------------------------------------------------------- verify
 
     def verify(self, ticket: dict[str, Any], result: Any, actor: str) -> dict[str, Any]:
-        user = (f"{self.scope_text(ticket)}\n\n## Ticket under review\n{ticket_prompt(ticket)}\n\n"
+        rules = project_rules(self.cfg)
+        rules_text = (f"## Project rules the work must obey (a violation is an automatic FAIL)\n{rules}\n\n"
+                      if rules else "")
+        user = (f"{self.scope_text(ticket)}\n\n{rules_text}## Ticket under review\n{ticket_prompt(ticket)}\n\n"
                 f"## Worker results\n{self.children_text(ticket)}\n\n"
                 f"## Claimed final result\n{json.dumps(result)[:6000]}\n\n"
                 f"## Evidence files\n{self.evidence(ticket, result)}")

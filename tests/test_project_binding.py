@@ -52,6 +52,6 @@ def test_scaffolded_command_bakes_in_project_path(tmp_path):
     scaffold(root)
     text = (root / ".claude" / "commands" / "orchestrate.md").read_text(encoding="utf-8")
     proj = str(root.resolve())
-    assert f'python -m orchestrator.ctl --project "{proj}" resume' in text
-    assert "python -m orchestrator.ctl run" not in text            # no bare, unbound ctl calls remain
+    assert f'python -P -m orchestrator.ctl --project "{proj}" resume' in text
+    assert "python -m orchestrator.ctl" not in text                # no bare, unbound, shadowable ctl calls remain
     assert f"{root.resolve().as_posix()}/workspace/run.log" in text

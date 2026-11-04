@@ -72,7 +72,7 @@ def spawn_run(project: str | Path, workspace: str | Path) -> None:
         flags["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
     else:
         flags["start_new_session"] = True
-    subprocess.Popen([sys.executable, "-m", "orchestrator.ctl", "--project", str(project), "run"],
+    subprocess.Popen([sys.executable, "-P", "-m", "orchestrator.ctl", "--project", str(project), "run"],
                      cwd=str(project), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **flags)
 
 

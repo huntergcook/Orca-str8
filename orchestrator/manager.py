@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .agent import as_result, parse_reply, run_ticket, ticket_prompt
+from .config import project_rules
 from .memory import Memory
 from .providers import Provider
 from .store import Store, StoreError
@@ -80,7 +81,10 @@ class Manager:
     def _decide(self, user: str) -> dict[str, Any] | None:
         hw = hardware_brief(self.store) if self.can_use_hardware else ""
         hw_section = f"# Hardware status (you own this)\n{hw}\n\n" if hw else ""
-        system = (f"{self.role_text}\n\n# Your memory\n{self.memory.resume_brief()}\n\n"
+        rules = project_rules(self.cfg)
+        rules_section = (f"# Project rules (mandatory; apply them to every worker ticket you write)\n{rules}\n\n"
+                         if rules else "")
+        system = (f"{self.role_text}\n\n{rules_section}# Your memory\n{self.memory.resume_brief()}\n\n"
                   f"{hw_section}{MANAGER_PROTOCOL}")
         limit = self.cfg["policies"]["capability_retry_limit"]
         msgs: list[dict[str, Any]] = [{"role": "user", "content": user}]
@@ -97,6 +101,11 @@ class Manager:
             msgs = msgs + [{"role": "assistant", "content": c.text or "(empty)"},
                            {"role": "user", "content": "Invalid reply. Respond with exactly one JSON object."}]
         return None
+
+    def _with_rules(self, role_text: str) -> str:
+        """A worker's role prompt plus the project's mandatory rules."""
+        rules = project_rules(self.cfg)
+        return f"{role_text}\n\n# Project rules (mandatory; breaking one makes the work unacceptable)\n{rules}" if rules else role_text
 
     def _children_summary(self, ticket_id: str) -> str:
         """One entry per worker. Failed or escalated workers include why, a sample of their last bad
@@ -237,9 +246,9 @@ class Manager:
                         models = models[min(used, len(models) - 1):]
                     box = ToolBox(self.workspace, actor=c["assignee"], can_acquire=self.can_acquire_tools,
                                   store=self.store, ticket_id=c["id"], can_use_hardware=self.can_use_hardware,
-                                  jobs=self.jobs)
+                                  jobs=self.jobs, read_roots=self.cfg.get("read_roots") or [])
                     run_ticket(self.store, self.provider, c["id"], c["assignee"],
-                               load_role(c["worker_role"]), models,
+                               self._with_rules(load_role(c["worker_role"])), models,
                                self.cfg["policies"]["capability_retry_limit"], toolbox=box)
                 continue
 
