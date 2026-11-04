@@ -20,6 +20,8 @@ Work only on the ticket below; stay inside its scope. Reply with exactly one JSO
   {"action": "ask", "question": "<what you need answered>"}
   {"action": "escalate", "reason": "<safety issue or out-of-scope problem>"}
   {"action": "fail", "reason": "<why it cannot be done>"}
+Keep the JSON reply SMALL. Put long content (reports, notes, data, code) in a file with write_file and
+return only a short summary and the file path in "result". Never put a long document inside the JSON.
 Match your effort to the ticket's rigor level."""
 
 
@@ -45,7 +47,8 @@ def parse_reply(text: str, key: str = "action") -> dict[str, Any] | None:
                 depth -= 1
                 if depth == 0:
                     try:
-                        obj = json.loads(text[start:i + 1])
+                        # strict=False tolerates raw newlines/tabs inside strings, which models often emit
+                        obj = json.loads(text[start:i + 1], strict=False)
                         if isinstance(obj, dict) and key in obj:
                             return obj
                     except json.JSONDecodeError:
@@ -104,11 +107,14 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
     sep = chr(10) * 2
     system = role_text + sep + PROTOCOL + ((sep + toolbox.describe()) if toolbox else "")
     messages: list[dict[str, Any]] = [{"role": "user", "content": ticket_prompt(t)}]
-    refusals = attempt = tool_steps = 0
+    refusals = invalid = tool_steps = 0
 
-    while attempt <= capability_retry_limit:  # +1 slot for the refusal retry
+    # `invalid` counts CONSECUTIVE unparseable replies (reset by any valid reply, e.g. a tool call), so a
+    # long tool-using conversation is not penalized for old mistakes. Every loop turn either returns,
+    # grows a bounded counter (invalid, refusals, tool_steps) or breaks, so this always terminates.
+    while True:
         # Refusal retries stay on the same model; only capability failures advance the chain.
-        model = models[min(attempt - refusals, len(models) - 1)]
+        model = models[min(invalid, len(models) - 1)]
         c = provider.complete(model=model, system=system, messages=messages)
         _usage(store, ticket_id, actor, c)
 
@@ -121,19 +127,23 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
                                         note=f"model refusal ({c.refusal_category}); needs human decision")
             store.add_event(ticket_id, actor, "refusal", {"category": c.refusal_category, "model": c.model})
             messages = messages[:1] + [{"role": "user", "content": _restated(t)}]
-            attempt += 1
             continue
 
         reply = parse_reply(c.text)
         if reply is None:
-            if attempt - refusals >= capability_retry_limit - 1:
+            invalid += 1
+            # Keep a sample of the bad reply so failures can be diagnosed afterwards.
+            store.add_event(ticket_id, actor, "invalid_reply", {
+                "n": invalid, "model": c.model, "chars": len(c.text), "head": c.text[:300], "tail": c.text[-200:]})
+            if invalid >= capability_retry_limit:
                 break
             messages = messages + [
                 {"role": "assistant", "content": c.text or "(empty)"},
-                {"role": "user", "content": "That was not a valid reply. Respond with exactly one JSON object per the protocol."},
+                {"role": "user", "content": "That was not a valid reply. Respond with exactly one JSON object "
+                                            "per the protocol, keeping it short (long content goes in a file)."},
             ]
-            attempt += 1
             continue
+        invalid = 0
 
         action = reply["action"]
         if action == "tool" and toolbox is not None:

@@ -166,7 +166,9 @@ class Manager:
             children = self.store.list_tickets(parent_id=ticket_id)
 
             # 1. run any open workers
-            open_kids = [c for c in children if c["status"] == "open"]
+            # 'in_progress' children here are orphans from a crash, or a worker the human sent back
+            # for another try; only one run is ever active, so re-running them is safe.
+            open_kids = [c for c in children if c["status"] in ("open", "in_progress")]
             if open_kids:
                 for i, c in enumerate(open_kids):
                     models = self.worker_models
