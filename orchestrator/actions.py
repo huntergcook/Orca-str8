@@ -18,7 +18,7 @@ import psutil
 from .store import Store, StoreError
 from .util import parse_stamp, process_alive
 
-CANCELLABLE = ("escalated", "needs_clarification", "blocked")
+CANCELLABLE = ("open", "in_progress", "escalated", "needs_clarification", "blocked")   # running work stops cooperatively
 FINISHED = ("done", "failed", "cancelled")
 
 
@@ -118,8 +118,20 @@ def cancel(store: Store, ticket_id: str, text: str, actor: str) -> dict[str, Any
     t = store.get_ticket(ticket_id)
     if t["status"] not in CANCELLABLE:
         raise StoreError(f"{ticket_id} is {t['status']}; nothing to cancel")
-    t = store.transition(ticket_id, "cancelled", actor, note=text.strip() or "cancelled by human")
-    return {"ticket_id": ticket_id, "status": t["status"]}
+    note = text.strip() or "cancelled by human"
+    t = store.transition(ticket_id, "cancelled", actor, note=note)
+    # the work below it is no longer needed either; running agents notice at their next model call and stop
+    stopped, todo = [], [ticket_id]
+    while todo:
+        for c in store.list_tickets(parent_id=todo.pop()):
+            todo.append(c["id"])
+            if c["status"] not in FINISHED:
+                try:
+                    store.transition(c["id"], "cancelled", actor, note=f"parent {ticket_id} cancelled: {note}"[:500])
+                    stopped.append(c["id"])
+                except StoreError:
+                    pass                      # it finished in the meantime
+    return {"ticket_id": ticket_id, "status": t["status"], "also_cancelled": stopped}
 
 
 def handoff(store: Store, ticket_id: str, text: str, actor: str) -> dict[str, Any]:

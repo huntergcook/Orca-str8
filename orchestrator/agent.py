@@ -173,10 +173,16 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
     while True:
         # Refusal retries stay on the same model; only capability failures advance the chain.
         model = models[min(invalid, len(models) - 1)]
+        if store.get_ticket(ticket_id)["status"] == "cancelled":       # cancelled from above: stop, keep what was saved
+            status("cancelled", "ticket cancelled")
+            return store.get_ticket(ticket_id)
         calls += 1
         status("thinking", f"model call {calls}", model)
         c = provider.complete(model=model, system=system, messages=messages)
         store.record_usage(ticket_id, actor, department, c, ticket_id)
+        if store.get_ticket(ticket_id)["status"] == "cancelled":       # cancelled during the call: drop the reply
+            status("cancelled", "ticket cancelled")
+            return store.get_ticket(ticket_id)
 
         if c.refused:
             refusals += 1

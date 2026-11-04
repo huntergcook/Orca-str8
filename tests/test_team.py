@@ -298,3 +298,30 @@ def test_the_time_budget_applies_per_run_not_to_idle_time_between_runs(store, tm
     with pytest.raises(Halted, match="time budget"):
         g.check()
     GuardedProvider(Probe(delay=0), store, cfg, tmp_path).check()   # the next run starts fresh again
+
+
+# ------------------------------------------------------------------------- cancelling running work
+
+def test_cancelling_a_running_ticket_stops_its_manager_and_workers(store, tmp_path):
+    from orchestrator.actions import cancel
+    tid = top(store)
+    started = threading.Event()
+
+    def slow_worker(first, msgs):
+        started.set()
+        return j(action="tool", tool="list_dir", args={"path": "."})   # keeps working forever unless stopped
+
+    p = Probe(delay=0.05, worker=slow_worker)
+    m = Manager("research_manager", store, p, load_config(None), tmp_path, "role", ["m"], ["w"])
+    out = {}
+    th = threading.Thread(target=lambda: out.setdefault("t", m.work(tid)))
+    th.start()
+    assert started.wait(5)
+    r = cancel(store, tid, "priorities changed", "top_manager")
+    assert r["status"] == "cancelled" and len(r["also_cancelled"]) == 4         # the cascade reached every worker
+    th.join(10)
+    assert not th.is_alive() and out["t"]["status"] == "cancelled"
+    assert all(c["status"] == "cancelled" for c in store.list_tickets(parent_id=tid))
+    n = len(p.calls)
+    time.sleep(0.3)
+    assert len(p.calls) == n                                                    # nobody keeps calling the model

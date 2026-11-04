@@ -75,6 +75,10 @@ def load_role(name: str, default: str = "") -> str:
     return default or f"You are a focused {name.replace('_', ' ')} worker. Do exactly what the ticket asks."
 
 
+
+class _Cancelled(Exception):
+    """The manager's ticket was cancelled from above while it was deciding."""
+
 class Manager:
     def __init__(self, name: str, store: Store, provider: Provider, cfg: dict[str, Any],
                  workspace: str | Path, role_text: str, manager_models: list[str],
@@ -142,9 +146,13 @@ class Manager:
         invalid = tool_steps = 0
         while True:
             model = self.manager_models[min(invalid, len(self.manager_models) - 1)]
+            if self.store.get_ticket(ticket_id)["status"] == "cancelled":
+                raise _Cancelled(ticket_id)
             self._status(ticket_id, "thinking", doing, model)
             c = self.provider.complete(model=model, system=system, messages=msgs)
             self.store.record_usage(ticket_id, self.name, self.department, c, self._agent_id(ticket_id))
+            if self.store.get_ticket(ticket_id)["status"] == "cancelled":
+                raise _Cancelled(ticket_id)
             if c.refused:
                 return {"action": "escalate", "kind": "refusal", "reason": f"model refusal ({c.refusal_category})"}
             reply = parse_reply(c.text, allow_dsml=True)
@@ -481,6 +489,12 @@ class Manager:
         """Drive one ticket to an outcome, like a team lead: every runnable worker runs in parallel; questions are
         answered and finished branches reviewed as soon as they arrive (not after everyone is done); the manager only
         plans or concludes when nothing else is pending. Returns the settled ticket (or one waiting on someone above)."""
+        try:
+            return self._work(ticket_id, max_rounds)
+        except _Cancelled:                    # cancelled from above mid-decision; workers stop at their next call
+            return self._settle(ticket_id)
+
+    def _work(self, ticket_id: str, max_rounds: int | None = None) -> dict[str, Any]:
         max_rounds = max_rounds or int(self.cfg["policies"].get("max_manager_rounds", 20))
         t = self.store.get_ticket(ticket_id)
         if t["status"] == "open":
@@ -611,6 +625,6 @@ class Manager:
     def _settle(self, ticket_id: str) -> dict[str, Any]:
         t = self.store.get_ticket(ticket_id)
         reason = (t.get("escalation") or {}).get("reason", "")
-        self._status(ticket_id, {"done": "done", "failed": "failed", "cancelled": "done"}.get(t["status"], t["status"]),
+        self._status(ticket_id, {"done": "done", "failed": "failed", "cancelled": "cancelled"}.get(t["status"], t["status"]),
                      reason or t["title"][:120])
         return t
