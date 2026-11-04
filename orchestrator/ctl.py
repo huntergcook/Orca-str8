@@ -8,7 +8,8 @@ files and SQLite, so a fresh session can resume with `resume`.
     python -m orchestrator.ctl [--config PATH] <command> [args]      (JSON on stdout)
 
 Commands: resume | board | ticket ID | create [--file F | stdin JSON] | run | watch | answer ID TEXT |
-          retry ID [TEXT] | cancel ID [TEXT] | handoff ID [TEXT] | state [--set (stdin)] | log TEXT | finish SUMMARY | pause | unpause
+          retry ID [TEXT] | cancel ID [TEXT] | handoff ID [TEXT] | recover | human TEXT |
+          release-resource NAME [REASON] | state [--set (stdin)] | log TEXT | finish SUMMARY | pause | unpause
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from .config import enter_project, load_config, model_chain
 from .hardware import hardware_brief
 from .limits import GuardedProvider, Halted
 from .memory import human_log
+from .util import append_durable, atomic_write, process_alive, process_stamp
 from .providers import Provider, build_provider
 from .store import Store, StoreError
 from .top import TopManager
@@ -99,7 +101,7 @@ class Ctl:
                 "human_log_tail": log.read_text(encoding="utf-8")[-3000:] if log.exists() else "",
                 "hardware": hardware_brief(self.store) or "(none)",
                 "finished": (self.workspace / "FINISHED").exists(),
-                "missing_keys": self.missing_keys(), **self.where(), **self.board()}
+                "missing_keys": self.missing_keys(), "recovery": self.recovery(), **self.where(), **self.board()}
 
     # ------------------------------------------------------------------ acting
 
@@ -156,7 +158,7 @@ class Ctl:
         if self.run_active():
             raise StoreError(f"a run is already active (pid {self.lock_path.read_text().strip()}); "
                              "watch `board` instead of starting another")
-        self.lock_path.write_text(str(os.getpid()))
+        atomic_write(self.lock_path, process_stamp())      # pid + start time: stays correct across reboots
         try:
             return self._run()
         finally:
@@ -181,6 +183,58 @@ class Ctl:
     def retry(self, ticket_id: str, text: str = "") -> dict[str, Any]:
         """Send an escalated ticket back to work (guidance is appended to its context)."""
         return actions.retry(self.store, ticket_id, text, "top_manager")
+
+    # ------------------------------------------------------- crash / power-loss recovery
+
+    def recovery(self, apply: bool = False) -> dict[str, Any]:
+        """What a crash or power cut left behind, so a restarted top manager can pick the whole project
+        back up. With apply=True it also clears a stale run lock and marks dead background jobs 'lost'.
+        It NEVER releases hardware claims: after an interruption the physical state is unknown."""
+        active = self.run_active()
+        stale_lock = self.lock_path.exists() and not active
+        if apply and stale_lock:
+            self.lock_path.unlink(missing_ok=True)
+        unfinished = []
+        if not active:
+            unfinished = [{"id": t["id"], "title": t["title"], "assignee": t["assignee"],
+                           "level": "top" if t["parent_id"] is None else "worker"}
+                          for t in self.store.list_tickets(status="in_progress")]
+        lost, alive_jobs = [], set()
+        for j in self.store.list_jobs(state="running"):
+            if apply:
+                j = self.top.jobs.refresh(j["id"], "recovery")
+                live = j["state"] == "running"
+            else:
+                live = process_alive(j["pid"], j.get("pid_started"))
+            if live:
+                alive_jobs.add(j["resource"])
+            else:
+                lost.append({"id": j["id"], "name": j["name"], "resource": j["resource"], "ticket": j["ticket_id"]})
+        orphaned = []
+        if not active:
+            orphaned = [{"name": r["name"], "held_by": r["holder_ticket"], "state": r["state"],
+                         "warning": "claimed by work that is no longer running; its physical state is unknown, "
+                                    "so verify the hardware before releasing it (release-resource)"}
+                        for r in self.store.list_resources() if r["holder_ticket"] and r["name"] not in alive_jobs]
+        needed = bool(stale_lock or unfinished or lost or orphaned)
+        return {"needed": needed, "run_active": active, "stale_lock": stale_lock, "unfinished_tickets": unfinished,
+                "lost_jobs": lost, "orphaned_resources": orphaned, "last_activity": self.store.last_event_ts(),
+                "next": ("Tell the human what was interrupted, run `recover`, check any orphaned hardware, then "
+                         "`run` to continue; workers restart knowing they were interrupted and check their saved files."
+                         if needed else "nothing to recover")}
+
+    def recover(self) -> dict[str, Any]:
+        return self.recovery(apply=True)
+
+    def release_resource(self, name: str, reason: str) -> dict[str, Any]:
+        """Explicitly free a hardware resource after a human has confirmed its physical state."""
+        self.store.force_release_resource(name, "top_manager", reason or "released after recovery")
+        return {"released": name}
+
+    def human_said(self, text: str) -> dict[str, Any]:
+        """Durably record something the human said or decided (so a restart loses nothing)."""
+        append_durable(human_log(self.workspace), "\n**human:** " + text.strip() + "\n")
+        return {"recorded": True}
 
     def handoff(self, ticket_id: str, text: str = "") -> dict[str, Any]:
         """Only for what you (the top manager) could not resolve: put it in front of the human."""
@@ -212,7 +266,7 @@ class Ctl:
             new = [a for a in board["needs_attention"] if f"{a['id']}:{a['status']}" not in seen]
             if new:
                 seen |= {f"{a['id']}:{a['status']}" for a in new}
-                (self.workspace / "attention_seen.json").write_text(json.dumps(sorted(seen)), encoding="utf-8")
+                atomic_write(self.workspace / "attention_seen.json", json.dumps(sorted(seen)))
                 return {"reason": "attention", "new_attention": new, "run_active": board["run_active"],
                         "still_open": len(board["needs_attention"])}
             pending = any(t["status"] in ("open", "in_progress") for t in self.store.list_tickets())
@@ -239,7 +293,7 @@ class Ctl:
 
     def finish(self, summary: str) -> dict[str, Any]:
         self.top.memory.append_journal(f"FINISHED: {summary}")
-        (self.workspace / "FINISHED").write_text(summary, encoding="utf-8")
+        atomic_write(self.workspace / "FINISHED", summary)
         return {"finished": True}
 
     def pause(self, on: bool) -> dict[str, Any]:
@@ -256,7 +310,7 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
     ap.add_argument("--project", help="project folder (default: $ORCHESTRATOR_PROJECT or the current directory)")
     ap.add_argument("--config", default="config/orchestrator.yaml")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("resume", "board", "run", "pause", "unpause"):
+    for name in ("resume", "board", "run", "pause", "unpause", "recover"):
         sub.add_parser(name)
     sub.add_parser("ticket").add_argument("id")
     c = sub.add_parser("create")
@@ -274,6 +328,10 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
     s = sub.add_parser("state")
     s.add_argument("--set", action="store_true", help="replace state notes with stdin")
     sub.add_parser("log").add_argument("text")
+    sub.add_parser("human").add_argument("text")
+    rr = sub.add_parser("release-resource")
+    rr.add_argument("name")
+    rr.add_argument("reason", nargs="?", default="")
     sub.add_parser("finish").add_argument("summary")
     a = ap.parse_args(argv)
 
@@ -298,6 +356,10 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
             out = ctl.ticket(a.id)
         elif a.cmd == "log":
             out = ctl.log(a.text)
+        elif a.cmd == "human":
+            out = ctl.human_said(a.text)
+        elif a.cmd == "release-resource":
+            out = ctl.release_resource(a.name, a.reason)
         elif a.cmd == "finish":
             out = ctl.finish(a.summary)
         elif a.cmd in ("pause", "unpause"):

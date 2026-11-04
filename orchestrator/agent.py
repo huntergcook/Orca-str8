@@ -107,8 +107,24 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
         store.transition(ticket_id, "in_progress", actor, note="worker started")
         t = store.get_ticket(ticket_id)
     sep = chr(10) * 2
+    interrupted = False
+    for e in reversed(store.events(ticket_id)):
+        if e["type"] == "worker_started":
+            interrupted = True          # a worker began and never reached an outcome: crash or power loss
+            break
+        if e["type"] in ("question_asked", "retry") or (
+                e["type"] == "status_changed" and e["payload"].get("to") in
+                ("done", "failed", "cancelled", "escalated", "needs_clarification")):
+            break
+    store.add_event(ticket_id, actor, "worker_started", {"resumed_after_interruption": interrupted})
     system = role_text + sep + PROTOCOL + ((sep + toolbox.describe()) if toolbox else "")
-    messages: list[dict[str, Any]] = [{"role": "user", "content": ticket_prompt(t)}]
+    first = ticket_prompt(t)
+    if interrupted:
+        first += (sep + "NOTE: an earlier attempt at this ticket was interrupted (crash or power loss) and its "
+                  "conversation was lost. Files it wrote under the workspace (for example work/" + ticket_id +
+                  "/ or paths mentioned above) and any background jobs may still exist: look before redoing "
+                  "work, and continue from where it left off.")
+    messages: list[dict[str, Any]] = [{"role": "user", "content": first}]
     refusals = invalid = tool_steps = 0
 
     # `invalid` counts CONSECUTIVE unparseable replies (reset by any valid reply, e.g. a tool call), so a

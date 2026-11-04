@@ -171,19 +171,42 @@ def create_app(db_path: str | Path, cfg: dict[str, Any] | None = None, launch_ru
     def state() -> dict[str, Any]:
         out = build_state(db_path, cfg)
         out["run_active"] = actions.run_is_active(workspace)
+        # work that needs a run but has none: typical after a crash, restart or power loss
+        out["unfinished"] = [] if out["run_active"] else [
+            {"id": t["id"], "title": t["title"], "status": t["status"]} for t in out["board"]
+            if t["status"] in ("open", "in_progress") and t["parent_id"] is None]
         return out
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return STATIC.read_text(encoding="utf-8").replace("__DASH_TOKEN__", token)
 
-    @app.post("/api/action")
-    def act(body: ActionIn, request: Request) -> JSONResponse:
+    def guard(request: Request) -> JSONResponse | None:
         host = (request.headers.get("host") or "").split(":")[0]
         if host not in ("127.0.0.1", "localhost"):
             return JSONResponse({"error": "bad host"}, status_code=403)
         if not secrets.compare_digest(request.headers.get("x-dashboard-token", ""), token):
             return JSONResponse({"error": "bad or missing token; reload the page"}, status_code=403)
+        return None
+
+    @app.post("/api/resume")
+    def resume(request: Request) -> JSONResponse:
+        denied = guard(request)
+        if denied:
+            return denied
+        if actions.run_is_active(workspace):
+            return JSONResponse({"error": "a run is already active"}, status_code=409)
+        try:
+            launch()
+        except OSError as e:
+            return JSONResponse({"error": f"could not start a run: {e}"}, status_code=500)
+        return JSONResponse({"run_started": True})
+
+    @app.post("/api/action")
+    def act(body: ActionIn, request: Request) -> JSONResponse:
+        denied = guard(request)
+        if denied:
+            return denied
         fn = actions.ACTIONS.get(body.action)
         if fn is None:
             return JSONResponse({"error": f"unknown action {body.action!r}"}, status_code=400)

@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     command   TEXT NOT NULL,
     resource  TEXT,
     pid       INTEGER,
+    pid_started REAL,
     state     TEXT NOT NULL DEFAULT 'running',  -- running | exited | stopped | lost
     exit_code INTEGER,
     log_path  TEXT NOT NULL,
@@ -127,8 +128,11 @@ class Store:
         self._conn = sqlite3.connect(self.path, isolation_level=None, timeout=30)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=FULL")      # a committed change survives a power cut
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(DDL)
+        if "pid_started" not in {r[1] for r in self._conn.execute("PRAGMA table_info(jobs)")}:
+            self._conn.execute("ALTER TABLE jobs ADD COLUMN pid_started REAL")     # databases created before this column
         self._validator = jsonschema.Draft202012Validator(json.loads(SCHEMA_PATH.read_text()))
 
     def close(self) -> None:
@@ -159,6 +163,10 @@ class Store:
                   payload: dict[str, Any] | None = None) -> None:
         with self._tx() as c:
             self._event(c, ticket_id, actor, type_, payload)
+
+    def last_event_ts(self) -> str | None:
+        row = self._conn.execute("SELECT ts FROM events ORDER BY seq DESC LIMIT 1").fetchone()
+        return row["ts"] if row else None
 
     def events(self, ticket_id: str | None = None, since_seq: int = 0) -> list[dict[str, Any]]:
         q, args = "SELECT * FROM events WHERE seq > ?", [since_seq]
@@ -350,13 +358,14 @@ class Store:
     # -------------------------------------------------------------------- jobs
 
     def create_job(self, ticket_id: str, actor: str, name: str, command: list[str], log_path: str,
-                   resource: str | None = None, pid: int | None = None, job_id: str | None = None) -> dict[str, Any]:
+                   resource: str | None = None, pid: int | None = None, job_id: str | None = None,
+                   pid_started: float | None = None) -> dict[str, Any]:
         job_id = job_id or uuid.uuid4().hex[:10]
         with self._tx() as c:
             c.execute(
-                "INSERT INTO jobs (id, ticket_id, actor, name, command, resource, pid, log_path, started_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
-                (job_id, ticket_id, actor, name, json.dumps(command), resource, pid, log_path, _now()))
+                "INSERT INTO jobs (id, ticket_id, actor, name, command, resource, pid, pid_started, log_path, started_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (job_id, ticket_id, actor, name, json.dumps(command), resource, pid, pid_started, log_path, _now()))
             self._event(c, ticket_id, actor, "job_started", {"job": job_id, "name": name, "resource": resource})
         return self.get_job(job_id)
 
@@ -426,6 +435,17 @@ class Store:
             if cur.rowcount == 0:
                 raise StoreError(f"{ticket_id} does not hold {name}")
             self._event(c, ticket_id, actor, "resource_released", {"resource": name})
+
+    def force_release_resource(self, name: str, actor: str, reason: str) -> None:
+        """Free a resource regardless of holder. For recovery after a crash or power loss, once a human
+        has confirmed the hardware's physical state."""
+        with self._tx() as c:
+            row = c.execute("SELECT holder_ticket FROM resources WHERE name=?", (name,)).fetchone()
+            if row is None:
+                raise NotFound(f"resource {name}")
+            c.execute("UPDATE resources SET state='free', holder_ticket=NULL, expected_duration=NULL,"
+                      " started_at=NULL, last_heartbeat=NULL WHERE name=?", (name,))
+            self._event(c, row["holder_ticket"], actor, "resource_force_released", {"resource": name, "reason": reason})
 
     def heartbeat_resource(self, name: str, ticket_id: str) -> None:
         with self._tx() as c:

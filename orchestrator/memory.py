@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .util import append_durable, atomic_write
+
 
 class Memory:
     def __init__(self, workspace: str | Path, agent: str) -> None:
@@ -22,12 +24,11 @@ class Memory:
         return self.state_path.read_text(encoding="utf-8") if self.state_path.exists() else ""
 
     def write_state(self, text: str) -> None:
-        self.state_path.write_text(text, encoding="utf-8")
+        atomic_write(self.state_path, text)
 
     def append_journal(self, text: str) -> None:
         ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with self.journal_path.open("a", encoding="utf-8") as f:
-            f.write(f"\n## {ts}\n{text.strip()}\n")
+        append_durable(self.journal_path, f"\n## {ts}\n{text.strip()}\n")
 
     def read_journal(self, last_chars: int = 6000) -> str:
         if not self.journal_path.exists():

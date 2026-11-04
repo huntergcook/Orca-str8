@@ -25,6 +25,7 @@ from typing import Any, Callable
 
 from .hardware import JobRunner, python_exe, resolve_in_workspace, venv_python
 from .store import Store, StoreError
+from .util import atomic_write
 
 PIP_SPEC_RE = re.compile(r"^[A-Za-z0-9]\S*$")  # no shell is used; this blocks option injection and spaces
 PROTECTED = ("memory", "orchestrator.db", "PAUSE", "jobs")
@@ -58,7 +59,7 @@ class ToolRegistry:
                  "added_by": "unknown", **entry}
         tools = [t for t in self.list() if t["name"] != entry["name"]]
         tools.append(entry)
-        self.path.write_text(json.dumps(sorted(tools, key=lambda t: t["name"]), indent=2), encoding="utf-8")
+        atomic_write(self.path, json.dumps(sorted(tools, key=lambda t: t["name"]), indent=2))
         return entry
 
     def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:

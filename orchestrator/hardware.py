@@ -20,6 +20,7 @@ from typing import Any
 import psutil
 
 from .store import NotFound, Store, StoreError
+from .util import process_alive
 
 MAX_WAIT = 60.0
 
@@ -76,8 +77,12 @@ class JobRunner:
             proc = subprocess.Popen(cmd, cwd=self.workspace, stdout=log, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, **flags)
         self._procs[job_id] = proc
+        try:
+            started = psutil.Process(proc.pid).create_time()
+        except psutil.Error:
+            started = None
         return self.store.create_job(ticket_id, actor, name or path.stem, cmd, str(log_path),
-                                     resource=resource, pid=proc.pid, job_id=job_id)
+                                     resource=resource, pid=proc.pid, job_id=job_id, pid_started=started)
 
     def refresh(self, job_id: str, actor: str = "jobs") -> dict[str, Any]:
         job = self.store.get_job(job_id)
@@ -91,9 +96,7 @@ class JobRunner:
                 return job
             return self.store.update_job(job_id, actor, state="exited", exit_code=rc, ended_at=now)
         # Started by an earlier process: we can only tell whether the pid is still alive.
-        alive = job["pid"] is not None and psutil.pid_exists(job["pid"]) and \
-            psutil.Process(job["pid"]).status() != psutil.STATUS_ZOMBIE
-        if alive:
+        if process_alive(job["pid"], job.get("pid_started")):
             return job
         return self.store.update_job(job_id, actor, state="lost", ended_at=now)
 

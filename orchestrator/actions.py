@@ -16,6 +16,7 @@ from typing import Any
 import psutil
 
 from .store import Store, StoreError
+from .util import parse_stamp, process_alive
 
 CANCELLABLE = ("escalated", "needs_clarification", "blocked")
 FINISHED = ("done", "failed", "cancelled")
@@ -52,12 +53,13 @@ def why_from_events(events: list[dict[str, Any]]) -> str:
 
 
 def run_is_active(workspace: str | Path) -> bool:
-    """True if a `ctl run` process is alive (its lock file holds a live pid)."""
+    """True if the `ctl run` that wrote the lock file is still the same live process. The lock holds the
+    pid AND its start time, so a stale lock whose pid was reused after a reboot is correctly seen as dead."""
     try:
-        pid = int((Path(workspace) / "RUNNING").read_text())
-    except (OSError, ValueError):
+        pid, started = parse_stamp((Path(workspace) / "RUNNING").read_text())
+    except OSError:
         return False
-    return psutil.pid_exists(pid)
+    return process_alive(pid, started)
 
 
 def spawn_run(project: str | Path, workspace: str | Path) -> None:
