@@ -3,10 +3,11 @@ name = "orchestrator"
 version = "0.0.1"
 description = "Hierarchical LLM research-lab orchestrator"
 requires-python = ">=3.11"
-dependencies = ["jsonschema>=4"]
+dependencies = ["jsonschema>=4", "pyyaml>=6"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
+anthropic = ["anthropic>=1"]
 
 [tool.setuptools]
 packages = ["orchestrator"]
