@@ -87,3 +87,30 @@ def test_build_provider_from_mixed_config():
     r = build_provider(cfg)
     assert [r.provider_name(m) for m in ("claude-opus-5-5", "deepseek-v4-pro", "deepseek-flash")] == \
         ["anthropic", "deepseek", "deepseek"]
+
+
+def test_a_connection_dropped_mid_response_is_retried_not_fatal():
+    n = {"calls": 0}
+
+    def flaky(req):
+        n["calls"] += 1
+        if n["calls"] <= 2:
+            raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+        return httpx.Response(200, json=ok_body("recovered"))
+
+    assert ds(flaky).complete(model="deepseek-v4-pro", system="s", messages=[]).text == "recovered"
+    assert n["calls"] == 3
+
+
+def test_transport_errors_that_never_clear_give_a_clear_error_and_other_errors_are_not_swallowed():
+    def always_drops(req):
+        raise httpx.ReadTimeout("slow")
+
+    with pytest.raises(RuntimeError, match=r"unavailable after 3 attempts \(ReadTimeout\)"):
+        ds(always_drops).complete(model="m", system="s", messages=[])
+
+    def bug(req):
+        raise ValueError("a real bug must surface, not be retried")
+
+    with pytest.raises(ValueError, match="real bug"):
+        ds(bug).complete(model="m", system="s", messages=[])

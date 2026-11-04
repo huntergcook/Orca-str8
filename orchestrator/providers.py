@@ -125,7 +125,15 @@ class OpenAICompatProvider:
             headers["Authorization"] = f"Bearer {self.api_key}"
         last = ""
         for attempt in range(self.retries):
-            r = self.client.post(f"{self.base_url}/chat/completions", json=body, headers=headers)
+            try:
+                r = self.client.post(f"{self.base_url}/chat/completions", json=body, headers=headers)
+            except Exception as e:
+                # A dropped connection, read timeout or similar is normal over long generations: retry it like a 5xx.
+                if not _is_transport_error(e):
+                    raise
+                last = type(e).__name__
+                time.sleep(self.backoff * (2 ** attempt))
+                continue
             if r.status_code == 429 or r.status_code >= 500:
                 last = f"HTTP {r.status_code}"
                 time.sleep(self.backoff * (2 ** attempt))
@@ -145,6 +153,14 @@ class OpenAICompatProvider:
                 model=model,
             )
         raise RuntimeError(f"API unavailable after {self.retries} attempts ({last})")
+
+
+def _is_transport_error(e: Exception) -> bool:
+    try:
+        import httpx
+    except ImportError:
+        return False
+    return isinstance(e, httpx.TransportError)    # RemoteProtocolError, ReadError, ConnectError, timeouts, ...
 
 
 DeepSeekProvider = OpenAICompatProvider      # original name, kept for existing code and tests
