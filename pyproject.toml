@@ -1,0 +1,15 @@
+[project]
+name = "orchestrator"
+version = "0.0.1"
+description = "Hierarchical LLM research-lab orchestrator"
+requires-python = ">=3.11"
+dependencies = ["jsonschema>=4"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["orchestrator"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
