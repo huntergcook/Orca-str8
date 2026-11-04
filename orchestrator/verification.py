@@ -95,9 +95,23 @@ class Verifier:
         return "\n\n".join(parts) or "(no artifact files found; judge from the result text alone and say so)"
 
     def children_text(self, ticket: dict[str, Any]) -> str:
-        rows = [f"- [{c['status']}] {c['title']} -> {json.dumps(c['result'])[:600]}"
-                for c in self.store.list_tickets(parent_id=ticket["id"])]
+        rows = []
+        for c in self.store.list_tickets(parent_id=ticket["id"]):
+            rows.append(f"- [{c['status']}] {c['title']} -> {json.dumps(c['result'])[:600]}")
+            if (c.get("result") or {}).get("code"):
+                rows.append(self._patch(c["id"]))
         return "\n".join(rows) or "(manager did the work directly)"
+
+    def _patch(self, ticket_id: str) -> str:
+        """A code ticket's actual diff (capped), so verification reviews the code, not just a description of it."""
+        from .codework import CodeError, code_repo_from_cfg
+        try:
+            repo = code_repo_from_cfg(self.cfg)
+            if repo is None:
+                return "  (no repository to show the patch)"
+            return f"  PATCH for {ticket_id} (capped):\n" + repo.diff(ticket_id, 200)
+        except CodeError as e:
+            return f"  (patch unavailable: {e})"
 
     # ----------------------------------------------------------------- verify
 

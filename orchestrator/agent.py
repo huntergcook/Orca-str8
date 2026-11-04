@@ -110,7 +110,8 @@ def _usage(store: Store, ticket_id: str, actor: str, c: Completion) -> None:
 
 def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, role_text: str,
                models: list[str], capability_retry_limit: int = 3, toolbox: Any | None = None,
-               max_tool_steps: int = 12) -> dict[str, Any]:
+               max_tool_steps: int = 12, on_done: Any | None = None, extra_context: str = "",
+               max_done_rejects: int = 3) -> dict[str, Any]:
     """Run one worker to completion on a ticket and return the updated ticket.
 
     Capability failures (unparseable reply) retry along `models` up to the limit, then escalate.
@@ -134,14 +135,14 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
             break
     store.add_event(ticket_id, actor, "worker_started", {"resumed_after_interruption": interrupted})
     system = role_text + sep + PROTOCOL + ((sep + toolbox.describe()) if toolbox else "")
-    first = ticket_prompt(t)
+    first = ticket_prompt(t) + extra_context
     if interrupted:
         first += (sep + "NOTE: an earlier attempt at this ticket was interrupted (crash or power loss) and its "
                   "conversation was lost. Files it wrote under the workspace (for example work/" + ticket_id +
                   "/ or paths mentioned above) and any background jobs may still exist: look before redoing "
                   "work, and continue from where it left off.")
     messages: list[dict[str, Any]] = [{"role": "user", "content": first}]
-    refusals = invalid = tool_steps = 0
+    refusals = invalid = tool_steps = done_rejects = 0
 
     # `invalid` counts CONSECUTIVE unparseable replies (reset by any valid reply, e.g. a tool call), so a
     # long tool-using conversation is not penalized for old mistakes. Every loop turn either returns,
@@ -195,7 +196,21 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
                 break
             continue
         if action == "done":
-            return store.transition(ticket_id, "done", actor, result=as_result(reply.get("result")))
+            result = as_result(reply.get("result"))
+            if on_done is not None:
+                # e.g. code tickets: the orchestrator runs its gates now and, if they fail, the SAME
+                # conversation gets the failures back to fix (no fresh worker, no lost context)
+                feedback = on_done(result)
+                if feedback:
+                    done_rejects += 1
+                    store.add_event(ticket_id, actor, "done_rejected", {"n": done_rejects, "feedback": feedback[:600]})
+                    if done_rejects >= max_done_rejects:
+                        return store.escalate(ticket_id, actor,
+                                              f"still failing its checks after {done_rejects} attempts: {feedback[:300]}",
+                                              kind="technical")
+                    messages = messages + [{"role": "assistant", "content": c.text}, {"role": "user", "content": feedback}]
+                    continue
+            return store.transition(ticket_id, "done", actor, result=result)
         if action == "ask":
             return store.ask_question(ticket_id, actor, str(reply.get("question", "")))
         if action == "escalate":

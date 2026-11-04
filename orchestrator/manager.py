@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .agent import as_result, parse_reply, run_ticket, ticket_prompt
+from .codework import CodeError, CodeSpec, CodeToolBox, code_repo_from_cfg, format_gate_failures, run_gates
 from .config import project_rules
 from .memory import Memory
 from .providers import Provider
@@ -27,7 +28,8 @@ Reply with exactly one JSON object:
   {"action": "delegate", "notes": "<journal entry>", "tickets": [
       {"title": "...", "worker_role": "...", "context": "...only what the worker needs...",
        "acceptance_criteria": ["..."], "return_spec": {"format": "...", "description": "..."},
-       "rigor": "quick_and_dirty|balanced|rigorous"}]}
+       "rigor": "quick_and_dirty|balanced|rigorous",
+       "code": {"allowed_paths": ["..."], "acceptance": ["..."], "context_files": ["..."]}}]}   # "code": only for tickets that change code
   {"action": "done", "notes": "...", "result": {...},       # result shaped as your ticket's return_spec
    "override_reason": "..."}                                # only if finishing despite verification concerns
   {"action": "answer", "answer": "..."}                    # only when answering a worker's question
@@ -74,6 +76,7 @@ class Manager:
         self.memory = Memory(workspace, name)
         self.role_text = role_text
         self.manager_models, self.worker_models = manager_models, worker_models
+        self._code_repo: Any = False                 # lazily built; None = code tickets not available
         self._notice: dict[str, str] = {}      # feedback for the manager's next decision, per ticket
 
     # ----------------------------------------------------------------- helpers
@@ -101,6 +104,56 @@ class Manager:
             msgs = msgs + [{"role": "assistant", "content": c.text or "(empty)"},
                            {"role": "user", "content": "Invalid reply. Respond with exactly one JSON object."}]
         return None
+
+    @property
+    def code_repo(self) -> Any:
+        if self._code_repo is False:
+            self._code_repo = code_repo_from_cfg(self.cfg)
+        return self._code_repo
+
+    def _code_briefing(self, worktree: Path, spec: CodeSpec) -> str:
+        """The code ticket's limits and the context files, appended to the worker's first message."""
+        out = ["", "", "## Code ticket",
+               "You work in your own git worktree. Write ONLY these paths: " + ", ".join(spec.allowed_paths),
+               "Acceptance commands (all must pass; run_tests runs them): " + "; ".join(spec.acceptance)]
+        budget = 24000
+        for rel in spec.context_files:
+            p = worktree / rel
+            if p.is_file() and budget > 0:
+                text = p.read_text(encoding="utf-8", errors="replace")[: min(6000, budget)]
+                budget -= len(text)
+                out += ["", f"### Context file: {rel}", "```", text, "```"]
+        return chr(10).join(out)
+
+    def _run_code_worker(self, c: dict[str, Any], models: list[str]) -> None:
+        """One code ticket: isolated worktree, scoped tools, and automatic gates when the worker says done."""
+        repo = self.code_repo
+        if repo is None:
+            self.store.escalate(c["id"], c["assignee"], "code tickets need a git repository (set code.repo in the config)",
+                                kind="technical", to="top_manager")
+            return
+        spec, code_cfg = CodeSpec.from_ticket(c), self.cfg.get("code") or {}
+        worktree = repo.ensure_worktree(c["id"])
+        self.store.add_event(c["id"], c["assignee"], "code_started", {"worktree": str(worktree), "branch": repo.branch(c["id"])})
+        box = CodeToolBox(self.workspace, c["assignee"], root=worktree, spec=spec,
+                          timeout=float(code_cfg.get("test_timeout", 600)), store=self.store, ticket_id=c["id"])
+
+        def gate_cb(result: dict[str, Any]) -> str | None:
+            repo.commit_all(c["id"], f"{c['id']}: {c['title']}")
+            gates = run_gates(repo, c["id"], spec, code_cfg)
+            ok = all(g["ok"] for g in gates)
+            self.store.add_event(c["id"], c["assignee"], "code_gates", {
+                "ok": ok, "gates": [{"name": g["name"], "ok": g["ok"], "detail": g["detail"][:800]} for g in gates]})
+            if not ok:
+                return format_gate_failures(gates)
+            files = [p for _, p in repo.changed_files(c["id"])]
+            result["code"] = {"branch": repo.branch(c["id"]), "files": files, "diffstat": repo.diffstat(c["id"])}
+            self.store.add_event(c["id"], c["assignee"], "code_ready", {"branch": repo.branch(c["id"]), "files": files})
+            return None
+
+        run_ticket(self.store, self.provider, c["id"], c["assignee"], self._with_rules(load_role(c["worker_role"])), models,
+                   self.cfg["policies"]["capability_retry_limit"], toolbox=box, on_done=gate_cb,
+                   extra_context=self._code_briefing(worktree, spec))
 
     def _with_rules(self, role_text: str) -> str:
         """A worker's role prompt plus the project's mandatory rules."""
@@ -174,8 +227,17 @@ class Manager:
 
     def _delegate(self, ticket_id: str, d: dict[str, Any]) -> None:
         cap = self.cfg["policies"]["max_children_per_agent"]
+        for spec in d.get("tickets", []):          # validate every code spec first, so a bad one creates nothing
+            if isinstance(spec, dict) and spec.get("code") is not None:
+                problems = CodeSpec.problems(spec["code"])
+                if problems:
+                    raise StoreError(f"code ticket {spec.get('title', '?')!r} is not usable: " + "; ".join(problems))
+                if self.code_repo is None:
+                    raise StoreError("code tickets need a git repository (set code.repo in the config)")
         for spec in d.get("tickets", []):
             spec = dict(spec)
+            if spec.get("code") is not None:
+                spec.setdefault("worker_role", "code_worker")
             role = spec.get("worker_role", "worker")
             # Number workers per role under this ticket (surveyor-1, surveyor-2, ...) so they can be told apart.
             n = 1 + sum(1 for c in self.store.list_tickets(parent_id=ticket_id) if c["worker_role"] == role)
@@ -244,6 +306,9 @@ class Manager:
                     else:                                              # each retry moves to the next fallback model
                         used = actions.retries_used(self.store, c["id"])
                         models = models[min(used, len(models) - 1):]
+                    if c.get("code") is not None:                      # code ticket: worktree, scoped tools, gates
+                        self._run_code_worker(c, models)
+                        continue
                     box = ToolBox(self.workspace, actor=c["assignee"], can_acquire=self.can_acquire_tools,
                                   store=self.store, ticket_id=c["id"], can_use_hardware=self.can_use_hardware,
                                   jobs=self.jobs, read_roots=self.cfg.get("read_roots") or [])
@@ -268,6 +333,15 @@ class Manager:
                 continue
 
             # 3. plan (no children yet) or review (all children settled)
+            if not children and t.get("worker_tickets"):
+                # the top manager wrote exact worker tickets: delegate them as written, no planning call
+                try:
+                    self._delegate(ticket_id, {"tickets": t["worker_tickets"]})
+                except StoreError as e:
+                    self.store.escalate(ticket_id, self.name, f"worker_tickets rejected: {e}", kind="blocked")
+                    break
+                self.memory.append_journal(f"[{ticket_id}] delegated {len(t['worker_tickets'])} worker ticket(s) as written")
+                continue
             if not children:
                 d = self._decide(f"# Your ticket\n{ticket_prompt(t)}\n\nPlan the work.")
             else:

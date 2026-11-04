@@ -8,7 +8,7 @@ files and SQLite, so a fresh session can resume with `resume`.
     python -m orchestrator.ctl [--config PATH] <command> [args]      (JSON on stdout)
 
 Commands: resume | board | ticket ID | create [--file F | stdin JSON] | run | watch | answer ID TEXT |
-          retry ID [TEXT] | cancel ID [TEXT] | handoff ID [TEXT] | recover | human TEXT | models ... | add-resource NAME [NOTE] | safe-to-stop NAME NOTE |
+          retry ID [TEXT] | cancel ID [TEXT] | handoff ID [TEXT] | recover | human TEXT | code list|show|accept|reject|discard | models ... | add-resource NAME [NOTE] | safe-to-stop NAME NOTE |
           release-resource NAME [REASON] | state [--set (stdin)] | log TEXT | finish SUMMARY | pause | unpause
 """
 from __future__ import annotations
@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from . import actions
+from .codework import CodeError, CodeRepo, code_repo_from_cfg
 from .config import enter_project, load_config, model_chain
 from .hardware import hardware_brief
 from .limits import GuardedProvider, Halted
@@ -252,6 +253,79 @@ class Ctl:
         append_durable(human_log(self.workspace), "\n**human:** " + text.strip() + "\n")
         return {"recorded": True}
 
+    # ------------------------------------------------------------- code review
+
+    def _repo(self) -> CodeRepo:
+        repo = code_repo_from_cfg(self.cfg)
+        if repo is None:
+            raise StoreError("no git repository for code tickets (set code.repo in the config, or run inside a git repo)")
+        return repo
+
+    def _code_state(self, ticket_id: str) -> str | None:
+        """Where a code ticket's branch stands: 'ready' (awaiting review), 'accepted', 'rejected', 'discarded'."""
+        last = [e["type"] for e in self.store.events(ticket_id)
+                if e["type"] in ("code_ready", "code_accepted", "code_rejected", "code_discarded")]
+        return last[-1].removeprefix("code_") if last else None
+
+    def code_list(self) -> dict[str, Any]:
+        rows = []
+        for t in self.store.list_tickets(status="done"):
+            if t.get("code") is not None and self._code_state(t["id"]) == "ready":
+                res = (t.get("result") or {})
+                gates = [e for e in self.store.events(t["id"]) if e["type"] == "code_gates"]
+                rows.append({"id": t["id"], "title": t["title"], "files": (res.get("code") or {}).get("files", []),
+                             "gates_passed": bool(gates and gates[-1]["payload"]["ok"]),
+                             "summary": str(res.get("summary", ""))[:300]})
+        return {"awaiting_review": rows,
+                "next": "ctl code show ID, then ctl code accept ID (merges) or ctl code reject ID \"feedback\"" if rows else "nothing to review"}
+
+    def _ready_ticket(self, ticket_id: str) -> dict[str, Any]:
+        t = self.store.get_ticket(ticket_id)
+        state = self._code_state(ticket_id)
+        if t.get("code") is None or state != "ready":
+            raise StoreError(f"{ticket_id} is not awaiting code review (state: {state or 'not a code ticket'})")
+        return t
+
+    def code_show(self, ticket_id: str, max_lines: int = 300) -> dict[str, Any]:
+        """The review packet: what changed, gate results, the worker's own summary and open questions, the diff."""
+        t, repo = self._ready_ticket(ticket_id), self._repo()
+        res = t.get("result") or {}
+        gates = [e for e in self.store.events(ticket_id) if e["type"] == "code_gates"]
+        return {"id": ticket_id, "title": t["title"], "summary": res.get("summary"), "open_questions": res.get("open_questions"),
+                "files": [f"{s} {p}" for s, p in repo.changed_files(ticket_id)], "diffstat": repo.diffstat(ticket_id),
+                "gates": gates[-1]["payload"]["gates"] if gates else [], "diff": repo.diff(ticket_id, max_lines)}
+
+    def code_accept(self, ticket_id: str) -> dict[str, Any]:
+        t, repo = self._ready_ticket(ticket_id), self._repo()
+        sha = repo.merge(ticket_id, f"Merge {ticket_id}: {t['title']}")
+        self.store.add_event(ticket_id, "top_manager", "code_accepted", {"merge_commit": sha})
+        return {"accepted": ticket_id, "merge_commit": sha, "branch": repo.base_branch}
+
+    def code_reject(self, ticket_id: str, feedback: str) -> dict[str, Any]:
+        """Discard the branch and file a replacement ticket that carries the reviewer's feedback."""
+        if not feedback.strip():
+            raise StoreError("reject needs feedback: say what is wrong and what right looks like")
+        t, repo = self._ready_ticket(ticket_id), self._repo()
+        root = t
+        while root.get("parent_id"):
+            root = self.store.get_ticket(root["parent_id"])
+        worker = {"title": t["title"], "worker_role": t.get("worker_role", "code_worker"), "rigor": t.get("rigor", "balanced"),
+                  "context": f"{t['context']}\n\n[Reviewer feedback on the previous attempt]: {feedback.strip()}",
+                  "acceptance_criteria": t["acceptance_criteria"], "return_spec": t["return_spec"], "code": t["code"]}
+        new = self.store.create_ticket({
+            "title": f"Redo: {t['title']}", "assignee": root["assignee"], "worker_role": "worker", "cc": ["top_manager"],
+            "context": worker["context"], "acceptance_criteria": t["acceptance_criteria"], "return_spec": t["return_spec"],
+            "rigor": worker["rigor"], "worker_tickets": [worker]}, actor="top_manager")
+        repo.discard(ticket_id)
+        self.store.add_event(ticket_id, "top_manager", "code_rejected", {"feedback": feedback.strip()[:500], "replacement": new["id"]})
+        return {"rejected": ticket_id, "replacement_ticket": new["id"], "assignee": new["assignee"]}
+
+    def code_discard(self, ticket_id: str) -> dict[str, Any]:
+        self._ready_ticket(ticket_id)
+        self._repo().discard(ticket_id)
+        self.store.add_event(ticket_id, "top_manager", "code_discarded", {})
+        return {"discarded": ticket_id}
+
     def handoff(self, ticket_id: str, text: str = "") -> dict[str, Any]:
         """Only for what you (the top manager) could not resolve: put it in front of the human."""
         return actions.handoff(self.store, ticket_id, text, "top_manager")
@@ -360,6 +434,11 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
         p = sub.add_parser(name)
         p.add_argument("id")
         p.add_argument("text", nargs="?", default="")
+    cd = sub.add_parser("code", help="review the code branches workers produced")
+    cd.add_argument("action", choices=["list", "show", "accept", "reject", "discard"])
+    cd.add_argument("id", nargs="?")
+    cd.add_argument("text", nargs="?", default="", help="feedback for reject")
+    cd.add_argument("--lines", type=int, default=300, help="diff lines to show")
     w = sub.add_parser("watch")
     w.add_argument("--timeout", type=float, default=600)
     w.add_argument("--grace", type=float, default=10)
@@ -404,6 +483,12 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
             out = ctl.state(sys.stdin.read() if a.set else None)
         elif a.cmd in ("answer", "retry", "cancel", "handoff"):
             out = getattr(ctl, a.cmd)(a.id, a.text)
+        elif a.cmd == "code":
+            if a.action != "list" and not a.id:
+                raise StoreError(f"code {a.action} needs a ticket id")
+            out = {"list": lambda: ctl.code_list(), "show": lambda: ctl.code_show(a.id, a.lines),
+                   "accept": lambda: ctl.code_accept(a.id), "reject": lambda: ctl.code_reject(a.id, a.text),
+                   "discard": lambda: ctl.code_discard(a.id)}[a.action]()
         elif a.cmd == "watch":
             out = ctl.watch(a.timeout, a.grace)
         elif a.cmd == "ticket":
@@ -426,7 +511,7 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
             out = getattr(ctl, a.cmd)()
         print(json.dumps(out, indent=2, default=str))
         return 0
-    except (StoreError, json.JSONDecodeError, KeyError) as e:
+    except (StoreError, CodeError, json.JSONDecodeError, KeyError) as e:
         print(json.dumps({"error": f"{type(e).__name__}: {e}"}))
         return 1
     finally:

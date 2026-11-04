@@ -77,6 +77,16 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
                     {"worker": t["assignee"], "role": t.get("worker_role"), "ticket": t["id"],
                      "title": t["title"], "status": t["status"]})
 
+        last_code: dict[str, str] = {}
+        for r in c.execute("SELECT ticket_id, type FROM events WHERE type IN ('code_ready','code_accepted','code_rejected','code_discarded') ORDER BY seq"):
+            last_code[r["ticket_id"]] = r["type"]
+        code_pending = []
+        for t in tickets:
+            if last_code.get(t["id"]) == "code_ready":
+                files = ((t.get("result") or {}).get("code") or {}).get("files", [])
+                code_pending.append({"id": t["id"], "title": t["title"], "files": files,
+                                     "summary": str((t.get("result") or {}).get("summary", ""))[:200]})
+
         board = [{"id": t["id"], "title": t["title"], "status": t["status"], "assignee": t["assignee"],
                   "trace": t["path_trace"], "rigor": t.get("rigor", "balanced"), "parent_id": t["parent_id"]}
                  for t in tickets]
@@ -96,7 +106,7 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
         events = [{**dict(r), "payload": json.loads(r["payload"])} for r in c.execute(
             "SELECT * FROM events WHERE type != 'usage' ORDER BY seq DESC LIMIT ?", (event_limit,))]
 
-        return {"needs_human": needs_human, "handling": handling, "org": org, "by_status": by_status, "board": board,
+        return {"needs_human": needs_human, "handling": handling, "code_pending": code_pending, "org": org, "by_status": by_status, "board": board,
                 "resources": resources, "jobs": jobs, "spend": spend, "events": events}
     finally:
         c.close()

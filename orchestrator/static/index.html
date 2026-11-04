@@ -36,6 +36,8 @@
     <span class="mut">(typical after a restart, crash or power cut)</span>
     <div class="btns"><button id="resume-btn">Resume run</button><span class="msg" id="resume-msg"></span></div></section>
   <section class="need" id="need-sec" hidden><h2>Needs human</h2><div id="need"></div></section>
+  <section id="code-sec" hidden><h2>Code awaiting review <span class="mut" id="code-n"></span></h2><div id="code-list"></div>
+    <div class="mut">Review with <code>ctl code show ID</code>, then <code>ctl code accept ID</code> or <code>ctl code reject ID "feedback"</code>.</div></section>
   <section id="handling-sec" hidden><details><summary><b>Being handled below you</b> <span class="mut" id="hn"></span></summary><div id="handling"></div></details></section>
   <div class="grid">
     <section><h2>Org</h2><div id="org"></div></section>
@@ -103,6 +105,10 @@ function render(s) {
   $("resume-sec").hidden = !s.unfinished.length;
   $("un-n").textContent = s.unfinished.length;
   renderNeed(s.needs_human);
+  $("code-sec").hidden = !s.code_pending.length;
+  $("code-n").textContent = "(" + s.code_pending.length + ")";
+  $("code-list").innerHTML = rows(s.code_pending, c => `<div class="item"><b>${esc(c.title)}</b> <code>${esc(c.id)}</code> ` +
+    `<span class="mut">${c.files.length} file(s): ${esc(c.files.join(", "))}</span><div class="mut">${esc(c.summary)}</div></div>`);
   $("handling-sec").hidden = !s.handling.length;
   $("hn").textContent = s.handling.length + " item" + (s.handling.length === 1 ? "" : "s") + " your managers are working on";
   $("handling").innerHTML = rows(s.handling, n => `<div class="item"><b>${esc(n.title)}</b> <code>${esc(n.id)}</code> ` +

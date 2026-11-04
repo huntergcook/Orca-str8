@@ -121,7 +121,7 @@ class TopManager:
             self.store.add_event(None, "top_manager", "bad_action", {"unknown_department": dept})
             return None
         fields = {k: a[k] for k in ("title", "context", "acceptance_criteria", "return_spec", "rigor",
-                                    "worker_role", "workspace_refs") if k in a}
+                                    "worker_role", "workspace_refs", "worker_tickets", "code") if k in a}
         fields.setdefault("worker_role", "worker")
         fields["assignee"] = self.managers[dept].name
         fields["cc"] = ["top_manager"]

@@ -45,6 +45,16 @@ Choices are saved in `config/models.yaml`, so they survive restarts and never ov
 6. **Review results** critically. Look at `verification_notes` and `verification_overridden` events (via `ticket ID`). Verification is advisory but weigh it heavily. Check the claims against the goal yourself; do not just relay them.
 7. **Finish** only when the stopping criteria are met: tell the human what was achieved, then `python -m orchestrator.ctl finish "summary"`.
 
+## The Software department (changing code)
+When the work is to change code, use the `software` department. Its workers each edit **their own git worktree** (branch `ticket/<id>`), can only write the paths the ticket allows, and cannot merge. When a worker says done, the orchestrator commits and runs gates (path policy, secret scan, the ticket's acceptance commands); failures go back to that same worker to fix. A branch that passes **waits for you to review it**.
+1. **Write the worker tickets yourself, precisely** (ticket quality decides the outcome, and a cheap manager should not re-plan them). Put them in the department ticket's `worker_tickets` and the manager delegates them as written. Each has `title`, `context` (what and why; quote exact API signatures; cheap models guess), `acceptance_criteria`, `return_spec`, and `"code": {"allowed_paths": [...], "acceptance": [...], "context_files": [...]}`:
+   - **One outcome, at most about 3 files** in narrow `allowed_paths` globs (`plugin/src/capture.*`, never `**`).
+   - **Executable acceptance**: at least one command that fails before and passes after (a pytest file, a validating script). "Looks right" is not acceptance. Where something cannot be built or run here (C++, the game, SteamVR), require a Python-side test of the data or protocol; real builds and headset checks are the human's.
+   - **Independent tickets**: every branch starts from the current main. If B needs A, get A accepted before requesting B.
+   - Delegate only what is cheaper to specify than to write; a long spec costs your usage. Do tiny fixes and decisions yourself.
+2. **Run, then review**: `ctl code list` shows branches awaiting review; `ctl code show ID` is the packet (worker summary, open questions, gate results, diff). Read the worker's `open_questions` first (they are the usual source of subtle bugs), then the diff for design and correctness against the ticket; do not re-verify what the gates verified. `ctl code accept ID` merges into the base branch (the repository must be on it with no uncommitted tracked changes, so commit your own edits first). `ctl code reject ID "what is wrong, where, and what right looks like"` discards the branch and files a replacement ticket carrying your feedback. Vague feedback wastes a retry; if the spec was the bug, reject with a clearer one.
+3. The Verification department also sees each patch (the diff, capped) and the project rules, so independent review of the code happens before you do.
+
 ## Rules
 - Pause everything with `python -m orchestrator.ctl pause` if something looks unsafe; resume with `unpause`.
 - The human prepared the hardware harness. Agents may explore freely inside it, but relay any glaring safety issue to the human right away.

@@ -43,6 +43,8 @@ departments:
   tooling:
     manager_role: roles/tooling_manager.md
     can_acquire_tools: true
+  software:                  # writes code in isolated git worktrees; branches wait for your review (needs a git repo)
+    manager_role: roles/software_manager.md
   verification:
     manager_role: roles/verification_manager.md
     diverse_models: true

@@ -10,6 +10,13 @@ import yaml
 DEFAULTS: dict[str, Any] = {
     "workspace": "./workspace",
     "rules_file": None,          # path (relative to the project) of rules every agent must obey; injected into all prompts
+    "code": {                   # the code-writing pipeline (code tickets)
+        "repo": None,           # git repo code tickets change (default: the project folder, if it is a git repo)
+        "base_branch": None,    # default: the branch checked out now
+        "worktrees_dir": None,  # default: <repo>-worktrees next to the repo
+        "test_timeout": 600,    # seconds per acceptance command
+        "gates": {"secret_scan": True, "extra_commands": []},
+    },
     "read_roots": [],            # project folders workers may read (never write); secrets are always blocked
     "providers": {
         "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},

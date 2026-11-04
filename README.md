@@ -111,9 +111,12 @@ understanding from notes and the ticket tree each time, so they survive restarts
 | **Research** | Theory, surveys, papers; decides technical direction from results |
 | **Tooling** | Builds and finds reusable tools. Checks its registry first, then searches open source (GitHub, PyPI), and only then builds. The only department allowed to acquire external code |
 | **Experiment** | Runs experiments: claims hardware, runs long sweeps as background jobs, watches them and fixes failures. Off by default; enable it for hardware work |
-| **Verification** | Independent, strict, *advisory* checks of results against the real goal, on different models for diversity |
+| **Software** | Changes code. Each worker edits **its own git worktree** and branch, can only write the paths its ticket allows, and runs the ticket's acceptance commands; the orchestrator then runs gates (path policy, secret scan, acceptance) and sends failures back to the same worker. A passing branch **waits for review** (`ctl code show / accept / reject`); nothing merges on its own |
+| **Verification** | Independent, strict, *advisory* checks of results against the real goal, on different models for diversity. It also reads each patch (the diff) and the project rules |
 
 You can add departments (see [Customize](#customize-it)).
+
+**Changing code (the Software department).** Code tickets carry a `code` spec: `allowed_paths` (narrow globs), `acceptance` (shell commands that must pass) and `context_files`. The worker gets a small tool set (list, read, search, `edit_file`, `write_file`, `run_tests`), nothing that can reach outside its worktree. When it says done, the orchestrator commits and runs the gates; if one fails the failure goes back into the *same* conversation. A passing branch is never merged automatically: the top manager (or you) reviews a packet (summary, open questions, gates, diff) and accepts or rejects it. The top manager can write exact worker tickets itself (`worker_tickets`), so ticket quality stays with the strongest model while cheap models write the code. Configure with `code:` in the config (`repo`, `base_branch`, `worktrees_dir`, `test_timeout`, `gates`). Workers cannot build C++ or run games, so acceptance should be Python-side tests; real builds stay yours.
 
 **Workers.** One ticket each, small context, then gone. They can read and write files inside the workspace, run Python,
 search the tool registry, and file tool requests; Tooling workers can also fetch code, and Experiment workers can claim
@@ -199,6 +202,7 @@ Run these from your project folder (or add `--project PATH`). Your agent runs mo
 | `ctl state --set` / `ctl log "..."` / `ctl human "..."` | Durable notes: plan, journal, and everything you said |
 | `ctl recover` / `ctl release-resource NAME "..."` | Recover after a crash; free hardware after you checked it |
 | `ctl add-resource NAME "when safe to stop"` / `ctl safe-to-stop NAME "..."` | Declare hardware for the Experiment department |
+| `ctl code list` / `show ID` / `accept ID` / `reject ID "feedback"` / `discard ID` | Review the branches the Software department produced: see the packet and diff, merge it, or send it back |
 | `ctl models ...` | See and choose models (above) |
 | `ctl pause` / `ctl unpause` | Halt or resume all model calls (also: create a file `workspace/PAUSE`) |
 | `ctl finish "summary"` | Mark the project done |

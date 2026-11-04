@@ -65,6 +65,20 @@
     },
     "result": { "type": ["object", "null"], "description": "Filled on completion, shaped by return_spec." },
     "verification_notes": { "type": "array", "items": { "type": "string" } },
+    "code": {
+      "type": "object",
+      "description": "Marks a code ticket: the worker edits an isolated git worktree under these limits.",
+      "properties": {
+        "allowed_paths": { "type": "array", "items": { "type": "string" }, "description": "Globs the worker may write." },
+        "acceptance": { "type": "array", "items": { "type": "string" }, "description": "Shell commands that must all exit 0 in the worktree." },
+        "context_files": { "type": "array", "items": { "type": "string" }, "description": "Files shown to the worker up front." }
+      }
+    },
+    "worker_tickets": {
+      "type": "array",
+      "description": "Precise worker tickets the manager must delegate as written, skipping its own planning.",
+      "items": { "type": "object" }
+    },
     "escalation": {
       "type": "object",
       "description": "Present while the ticket is escalated or waiting on a question: who must handle it.",
