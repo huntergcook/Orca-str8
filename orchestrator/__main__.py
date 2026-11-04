@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .config import load_config
 from .limits import GuardedProvider, Halted
-from .providers import AnthropicProvider
+from .providers import build_provider
 from .store import Store
 from .top import TopManager
 
@@ -21,7 +21,7 @@ def main() -> None:
     workspace = Path(cfg["workspace"])
     workspace.mkdir(parents=True, exist_ok=True)
     store = Store(args.db or workspace / "orchestrator.db")
-    provider = GuardedProvider(AnthropicProvider(), store, cfg, workspace)
+    provider = GuardedProvider(build_provider(cfg), store, cfg, workspace)
     top = TopManager(store, provider, cfg, workspace)
 
     print("Orchestrator top manager. Ctrl+C or /quit to exit; /board shows tickets.")

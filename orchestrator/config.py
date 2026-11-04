@@ -9,7 +9,11 @@ import yaml
 
 DEFAULTS: dict[str, Any] = {
     "workspace": "./workspace",
-    "providers": {},
+    "providers": {
+        "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
+        "deepseek": {"api_key_env": "DEEPSEEK_API_KEY", "base_url": "https://api.deepseek.com",
+                     "max_output_tokens": 32000},
+    },
     "models": {
         "top": {"provider": "anthropic", "model": "claude-opus-5-5"},
         "manager": {"provider": "anthropic", "model": "claude-opus-5-5"},

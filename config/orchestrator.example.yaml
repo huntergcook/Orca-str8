@@ -7,14 +7,20 @@ providers:
   # Provider-agnostic. Add any that implement the provider interface.
   anthropic:
     api_key_env: ANTHROPIC_API_KEY
-  # openai:
-  #   api_key_env: OPENAI_API_KEY
+  deepseek:                     # OpenAI-format API; models: deepseek-flash, deepseek-v4-pro
+    api_key_env: DEEPSEEK_API_KEY
+    base_url: https://api.deepseek.com
+    max_output_tokens: 32000
 
 models:
   # Logical tiers -> concrete models. Higher in the hierarchy uses higher tiers.
   top:     { provider: anthropic, model: claude-opus-5-5 }
   manager: { provider: anthropic, model: claude-opus-5-5 }
   worker:  { provider: anthropic, model: claude-sonnet-5-5 }   # cheaper tier; change if you prefer
+  # Mixed-vendor example: Claude on top, DeepSeek below. Each tier's `provider` routes its model.
+  #   top:     { provider: anthropic, model: claude-opus-5-5 }
+  #   manager: { provider: deepseek,  model: deepseek-v4-pro }
+  #   worker:  { provider: deepseek,  model: deepseek-flash }
   fallback_chain: []   # capability-stuck fallbacks, tried in order. Never used to route around safety refusals.
 
 budget:

@@ -17,6 +17,8 @@ Clone this repo into (or alongside) a project, supply API keys via environment v
 pip install -e ".[dev,anthropic]"
 cp config/orchestrator.example.yaml config/orchestrator.yaml   # set models, departments
 export ANTHROPIC_API_KEY=...                                    # or `ant auth login`
+export DEEPSEEK_API_KEY=...                                     # only if a tier uses DeepSeek
+python -m orchestrator.smoke      # pre-flight: one tiny call per configured model
 python -m orchestrator            # CLI: talk to the top manager
 python -m orchestrator.dashboard  # read-only dashboard on http://127.0.0.1:8080
 pytest

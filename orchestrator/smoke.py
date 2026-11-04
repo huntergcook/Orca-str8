@@ -9,7 +9,7 @@ import argparse
 import sys
 
 from .config import load_config, model_chain
-from .providers import AnthropicProvider
+from .providers import build_provider
 
 
 def configured_models(cfg: dict) -> list[str]:
@@ -28,9 +28,9 @@ def main() -> int:
     models = configured_models(cfg)
     print(f"Checking {len(models)} model(s) from {args.config}: {', '.join(models)}")
     try:
-        provider = AnthropicProvider()
+        provider = build_provider(cfg)
     except Exception as e:  # missing credentials surface here or on first call
-        print(f"FAIL  could not create the Anthropic client: {type(e).__name__}: {e}")
+        print(f"FAIL  could not build the provider: {type(e).__name__}: {e}")
         return 1
     bad = 0
     for m in models:
