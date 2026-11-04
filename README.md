@@ -24,7 +24,16 @@ python -m orchestrator.dashboard  # read-only dashboard on http://127.0.0.1:8080
 pytest
 ```
 
+## Claude Code as the top manager (uses your subscription)
+Set the top tier to `{ provider: external, model: claude-code }` and run `claude` in this repo. Then type
+`/orchestrate <what you want done>`. Your Claude Code session plays the top manager and drives the lab through
+`python -m orchestrator.ctl` (resume, create, run, board, answer, retry, state, log, finish, pause). Department
+managers, workers and verifiers run on the API providers you configure (e.g. DeepSeek), so no Claude API key is
+needed. All state is in `workspace/`, so a fresh session resumes with `ctl resume`.
+
 ## Layout
+- `orchestrator/ctl.py`: control interface for an external top manager
+- `.claude/commands/orchestrate.md`: the `/orchestrate` slash command
 - `orchestrator/store.py`: SQLite tickets, append-only events, hardware resources
 - `orchestrator/agent.py`: worker runner (capability retries, refusal policy)
 - `orchestrator/manager.py`: department manager loop (plan, run workers, answer questions, review)

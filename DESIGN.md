@@ -64,6 +64,10 @@ Order for any need: **registry, then open source, then build.**
 - Requested audits go to the Verification department itself, whose workers rotate across the verifier models. Verification results are not themselves verified.
 - Implemented in `orchestrator/verification.py` and `Manager._verify_gate`; roles in `roles/verification_manager.md` and `roles/workers/verifier.md`.
 
+### External top manager (Claude Code)
+
+The top tier can be played by an interactive agent instead of an API model (`models.top.provider: external`). That agent talks to the human and uses `python -m orchestrator.ctl` as its hands; all durable state (state notes, journal, tickets, events) lives in the workspace, so the agent's own context can be lost and a new session resumes with `ctl resume`. The `/orchestrate` slash command (`.claude/commands/orchestrate.md`) gives Claude Code the top-manager role. Departments still run on the configured API providers.
+
 ## 3. Tickets
 
 Tickets are the only way work and information move between agents. See `schemas/ticket.schema.json`.

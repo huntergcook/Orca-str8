@@ -247,6 +247,15 @@ class Store:
                         {"from": old, "to": new_status, "note": note})
             return t
 
+    def append_context(self, ticket_id: str, actor: str, text: str) -> dict[str, Any]:
+        """Add guidance to a ticket's context (e.g. from the top manager when retrying an escalation)."""
+        with self._tx() as c:
+            t = self._load(c, ticket_id)
+            t["context"] = f"{t['context']}\n\n[Guidance from {actor}]: {text}"
+            self._save(c, t)
+            self._event(c, ticket_id, actor, "context_appended", {"text": text})
+            return t
+
     def add_verification(self, ticket_id: str, actor: str, verdict: str, notes: list[str]) -> dict[str, Any]:
         """Attach advisory verification notes to a ticket and log the verdict."""
         with self._tx() as c:

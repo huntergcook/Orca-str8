@@ -112,19 +112,23 @@ class TopManager:
         self.pump()
         return say
 
+    def create_ticket(self, a: dict[str, Any]) -> str | None:
+        """Create a top-level ticket for a department manager. Returns the ticket id."""
+        dept = a.get("department")
+        if dept not in self.managers:
+            self.store.add_event(None, "top_manager", "bad_action", {"unknown_department": dept})
+            return None
+        fields = {k: a[k] for k in ("title", "context", "acceptance_criteria", "return_spec", "rigor",
+                                    "worker_role", "workspace_refs") if k in a}
+        fields.setdefault("worker_role", "worker")
+        fields["assignee"] = self.managers[dept].name
+        fields["cc"] = ["top_manager"]
+        return self.store.create_ticket(fields, actor="top_manager")["id"]
+
     def _act(self, a: dict[str, Any]) -> None:
         kind = a.get("type")
         if kind == "create_ticket":
-            dept = a.get("department")
-            if dept not in self.managers:
-                self.store.add_event(None, "top_manager", "bad_action", {"unknown_department": dept})
-                return
-            fields = {k: a[k] for k in ("title", "context", "acceptance_criteria", "return_spec", "rigor",
-                                        "worker_role") if k in a}
-            fields.setdefault("worker_role", "worker")
-            fields["assignee"] = self.managers[dept].name
-            fields["cc"] = ["top_manager"]
-            self.store.create_ticket(fields, actor="top_manager")
+            self.create_ticket(a)
         elif kind == "set_state":
             self.memory.write_state(str(a.get("text", "")))
         elif kind == "log":
