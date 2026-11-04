@@ -137,6 +137,7 @@ def main() -> None:
     ap.add_argument("--config", default="config/orchestrator.yaml")
     ap.add_argument("--db", default=None)
     ap.add_argument("--port", type=int, default=None)
+    ap.add_argument("--open", action="store_true", help="open the dashboard in your browser")
     ap.add_argument("--demo", action="store_true", help="serve a temporary database filled with sample data")
     a = ap.parse_args()
     cfg = load_config(a.config)
@@ -148,7 +149,21 @@ def main() -> None:
         cfg["budget"]["max_tokens"] = 400000
         print(f"Demo mode: sample data in {db}")
     port = a.port or cfg["interfaces"]["dashboard"]["port"]
-    uvicorn.run(create_app(db, cfg), host="127.0.0.1", port=port, log_level="warning")
+    url = f"http://127.0.0.1:{port}"
+    print(f"Dashboard serving {db}\n  -> {url}\n  This process keeps running until you press Ctrl+C "
+          "(run it in its own terminal window).", flush=True)
+    if a.open:
+        import threading
+        import webbrowser
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    try:
+        uvicorn.run(create_app(db, cfg), host="127.0.0.1", port=port, log_level="warning")
+    except KeyboardInterrupt:
+        pass
+    except OSError as e:
+        print(f"Could not start on port {port}: {e}. Try --port with a different number.")
+        raise SystemExit(1)
+    print("Dashboard stopped.")
 
 
 if __name__ == "__main__":
