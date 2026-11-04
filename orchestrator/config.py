@@ -49,7 +49,31 @@ def _merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def load_dotenv(path: str | Path) -> list[str]:
+    """Minimal .env loader (KEY=VALUE lines, # comments, optional quotes). Never overrides
+    variables that are already set. Returns the names it set. .env is gitignored."""
+    p = Path(path)
+    if not p.is_file():
+        return []
+    import os
+    set_names = []
+    for line in p.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k, v = k.strip().removeprefix("export ").strip(), v.strip().strip('"').strip("'")
+        if k and v and k not in os.environ:
+            os.environ[k] = v
+            set_names.append(k)
+    return set_names
+
+
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
+    # Look for .env in the working directory and next to the config's parent (the repo root).
+    load_dotenv(Path.cwd() / ".env")
+    if path is not None:
+        load_dotenv(Path(path).resolve().parent.parent / ".env")
     if path is None or not Path(path).exists():
         return copy.deepcopy(DEFAULTS)
     data = yaml.safe_load(Path(path).read_text()) or {}

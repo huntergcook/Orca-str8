@@ -117,3 +117,18 @@ def test_guarded_provider_pause_and_budget(store, tmp_path):
     with pytest.raises(Halted, match="paused"):
         g.complete(model="m", system="s", messages=[])
     assert len(inner.calls) == 2
+
+
+def test_dotenv_loads_without_overriding(tmp_path, monkeypatch):
+    from orchestrator.config import load_dotenv
+    (tmp_path / ".env").write_text("# c\nFOO_KEY_T=abc\nexport BAR_KEY_T='q r'\nEXISTING_T=new\nEMPTY_T=\n", encoding="utf-8")
+    monkeypatch.setenv("EXISTING_T", "keep")
+    monkeypatch.delenv("FOO_KEY_T", raising=False)
+    monkeypatch.delenv("BAR_KEY_T", raising=False)
+    names = load_dotenv(tmp_path / ".env")
+    import os
+    assert sorted(names) == ["BAR_KEY_T", "FOO_KEY_T"]
+    assert os.environ["FOO_KEY_T"] == "abc" and os.environ["BAR_KEY_T"] == "q r"
+    assert os.environ["EXISTING_T"] == "keep" and "EMPTY_T" not in os.environ
+    monkeypatch.delenv("FOO_KEY_T"); monkeypatch.delenv("BAR_KEY_T")
+    assert load_dotenv(tmp_path / "missing") == []
