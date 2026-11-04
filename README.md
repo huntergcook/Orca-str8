@@ -16,7 +16,7 @@ It works with whatever AI access you have: API keys, or just a CLI subscription,
 - **What is it not for?** One-off questions or quick edits (just use your agent directly), and anything that needs a
   real security sandbox (see [Safety](#safety-and-limits)).
 
-> **Status: early.** Built and tested with 149 automated tests against mock models, plus live runs: a full research
+> **Status: early.** Built and tested with 166 automated tests against mock models, plus live runs: a full research
 > task on DeepSeek models, and real calls through the Claude CLI. Not yet exercised live: Codex, the Tooling
 > department's code sourcing, real hardware, game development. See [What has been verified](#what-has-been-verified).
 
@@ -219,6 +219,8 @@ Run these from your project folder (or add `--project PATH`). Your agent runs mo
 | `verification` | `enabled`, `verifier_models`, `max_rounds` |
 | `budget` | `max_tokens`, `max_minutes` are enforced; `max_cost_usd` is **not yet** |
 | `policies` | `capability_retry_limit`, `max_worker_retries`, `max_children_per_agent`, `default_rigor` |
+| `read_roots` | Folders agents may **read** (never write), by absolute path, e.g. your existing code repo. `.env`, keys and credential files are always blocked. Output still goes to `workspace/` |
+| `rules_file` | A file of mandatory project rules (legal, safety, house rules) injected into **every** manager, worker and verifier prompt; verification fails work that breaks them |
 
 - **Hardware work:** uncomment the `experiment` department, declare each device (`ctl add-resource`), then describe the
   rig to your top manager. Agents run Python scripts and background jobs on your machine to drive it.
@@ -226,6 +228,7 @@ Run these from your project folder (or add `--project PATH`). Your agent runs mo
   repo's `roles/`: a manager role (`roles/gamedev_manager.md`, referenced from `departments.<name>.manager_role`) or a
   worker role (`roles/workers/<name>.md`, named by tickets' `worker_role`). A department with no file uses a generic
   template plus its `mission`.
+- **Using it on an existing project:** scaffold into a *copy* first (`git clone` your repo, strip anything agent-specific you no longer want), set `read_roots` to the folder, and put your non-negotiable rules in a `rules_file`. If the project has its own top-level Python package named `orchestrator`, it can shadow this one; generated commands already use `python -P` (which stops the working directory from shadowing installed packages), and so should you when running by hand: `python -P -m orchestrator.ctl ...`.
 - **More departments:** add an entry under `departments:` (for example `gamedev: {manager_role: roles/gamedev_manager.md}`).
 - **Keys for tool search:** set `GITHUB_TOKEN` in `.env` to avoid GitHub's anonymous rate limit.
 
@@ -251,7 +254,7 @@ Read this before pointing it at anything that matters.
 
 ## What has been verified
 
-- **149 automated tests**, all with mock or scripted providers plus real local subprocesses (jobs, a fake CLI backend, a
+- **166 automated tests**, all with mock or scripted providers plus real local subprocesses (jobs, a fake CLI backend, a
   simulated power loss, concurrency guards, the dashboard's security checks).
 - **Live:** a complete research task ran end to end on DeepSeek models: the research department, workers using the file,
   Python and tool-registry tools, the verification gate, and worker escalations. The Claude CLI backend also answered a
