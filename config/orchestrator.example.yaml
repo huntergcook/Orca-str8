@@ -1,0 +1,53 @@
+# Example top-level config. Copy to orchestrator.yaml. Never commit API keys;
+# reference them by environment variable name.
+
+workspace: ./workspace
+
+providers:
+  # Provider-agnostic. Add any that implement the provider interface.
+  anthropic:
+    api_key_env: ANTHROPIC_API_KEY
+  # openai:
+  #   api_key_env: OPENAI_API_KEY
+
+models:
+  # Logical tiers -> concrete models. Higher in the hierarchy uses higher tiers.
+  top:     { provider: anthropic, model: REPLACE_ME }
+  manager: { provider: anthropic, model: REPLACE_ME }
+  worker:  { provider: anthropic, model: REPLACE_ME }
+  fallback_chain: []   # capability-stuck fallbacks, tried in order
+
+budget:
+  # Default: no limits. Set any of these to enable.
+  max_cost_usd: null
+  max_tokens: null
+  max_minutes: null
+
+policies:
+  capability_retry_limit: 3
+  on_safety_refusal: retry_once_then_escalate_to_human   # never auto-reroute
+  max_subworker_depth: 2      # worker -> sub-worker; tune as we learn
+  max_children_per_agent: 5
+  default_rigor: balanced     # quick_and_dirty | balanced | rigorous
+  verification_is_advisory: true
+
+departments:
+  research:
+    manager_role: roles/research_manager.md
+    can_acquire_tools: false
+  tooling:
+    manager_role: roles/tooling_manager.md
+    can_acquire_tools: true          # only department allowed to clone/install tools
+  experiment:
+    manager_role: roles/experiment_manager.md
+    can_acquire_tools: false
+    resource_leases: true            # lock physical hardware
+  verification:
+    manager_role: roles/verification_manager.md
+    can_acquire_tools: false
+    diverse_models: true
+  # Add more departments here.
+
+interfaces:
+  cli: true
+  dashboard: { enabled: true, port: 8080 }
