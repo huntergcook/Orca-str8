@@ -14,6 +14,7 @@ from .agent import parse_reply, run_ticket, ticket_prompt
 from .memory import Memory
 from .providers import Provider
 from .store import Store
+from .hardware import JobRunner, hardware_brief
 from .tools import ToolBox
 
 ROLES_DIR = Path(__file__).resolve().parents[1] / "roles"
@@ -42,10 +43,13 @@ def load_role(name: str, default: str = "") -> str:
 class Manager:
     def __init__(self, name: str, store: Store, provider: Provider, cfg: dict[str, Any],
                  workspace: str | Path, role_text: str, manager_models: list[str],
-                 worker_models: list[str], can_acquire_tools: bool = False) -> None:
+                 worker_models: list[str], can_acquire_tools: bool = False,
+                 can_use_hardware: bool = False, jobs: JobRunner | None = None) -> None:
         self.name = name
         self.workspace = Path(workspace)
         self.can_acquire_tools = can_acquire_tools
+        self.can_use_hardware = can_use_hardware
+        self.jobs = jobs if jobs is not None else JobRunner(store, workspace)
         self.store, self.provider, self.cfg = store, provider, cfg
         self.memory = Memory(workspace, name)
         self.role_text = role_text
@@ -54,7 +58,10 @@ class Manager:
     # ----------------------------------------------------------------- helpers
 
     def _decide(self, user: str) -> dict[str, Any] | None:
-        system = (f"{self.role_text}\n\n# Your memory\n{self.memory.resume_brief()}\n\n{MANAGER_PROTOCOL}")
+        hw = hardware_brief(self.store) if self.can_use_hardware else ""
+        hw_section = f"# Hardware status (you own this)\n{hw}\n\n" if hw else ""
+        system = (f"{self.role_text}\n\n# Your memory\n{self.memory.resume_brief()}\n\n"
+                  f"{hw_section}{MANAGER_PROTOCOL}")
         limit = self.cfg["policies"]["capability_retry_limit"]
         msgs: list[dict[str, Any]] = [{"role": "user", "content": user}]
         for attempt in range(limit):
@@ -121,7 +128,8 @@ class Manager:
             if open_kids:
                 for c in open_kids:
                     box = ToolBox(self.workspace, actor=c["assignee"], can_acquire=self.can_acquire_tools,
-                                  store=self.store)
+                                  store=self.store, ticket_id=c["id"], can_use_hardware=self.can_use_hardware,
+                                  jobs=self.jobs)
                     run_ticket(self.store, self.provider, c["id"], c["assignee"],
                                load_role(c["worker_role"]), self.worker_models,
                                self.cfg["policies"]["capability_retry_limit"], toolbox=box)

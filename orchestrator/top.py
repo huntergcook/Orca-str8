@@ -11,6 +11,7 @@ from typing import Any
 from .agent import parse_reply
 from .config import model_chain
 from .manager import ROLES_DIR, Manager, load_role
+from .hardware import JobRunner
 from .memory import Memory, human_log
 from .providers import Provider
 from .store import Store
@@ -38,6 +39,7 @@ class TopManager:
         self.models = model_chain(cfg, "top")
         self.finished = False
         mgr_models, wrk_models = model_chain(cfg, "manager"), model_chain(cfg, "worker")
+        self.jobs = JobRunner(store, workspace)
         self.managers: dict[str, Manager] = {}
         for dept, spec in cfg["departments"].items():
             role_path = Path(spec.get("manager_role", ""))
@@ -46,7 +48,9 @@ class TopManager:
                 "{{DEPARTMENT}}", dept).replace("{{DEPARTMENT_MISSION}}", spec.get("mission", dept))
             self.managers[dept] = Manager(f"{dept}_manager", store, provider, cfg, workspace, role,
                                           mgr_models, wrk_models,
-                                          can_acquire_tools=bool(spec.get("can_acquire_tools", False)))
+                                          can_acquire_tools=bool(spec.get("can_acquire_tools", False)),
+                                          can_use_hardware=bool(spec.get("resource_leases", False)),
+                                          jobs=self.jobs)
 
     # ------------------------------------------------------------------ context
 

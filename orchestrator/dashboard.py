@@ -60,6 +60,8 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
                  for t in tickets]
 
         resources = [dict(r) for r in c.execute("SELECT * FROM resources ORDER BY name")]
+        jobs = [{k: r[k] for k in ("id", "name", "state", "resource", "ticket_id", "exit_code", "started_at")}
+                for r in c.execute("SELECT * FROM jobs ORDER BY started_at DESC LIMIT 15")]
 
         tokens_in = tokens_out = 0
         for r in c.execute("SELECT payload FROM events WHERE type='usage'"):
@@ -73,7 +75,7 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
             "SELECT * FROM events WHERE type != 'usage' ORDER BY seq DESC LIMIT ?", (event_limit,))]
 
         return {"needs_human": needs_human, "org": org, "by_status": by_status, "board": board,
-                "resources": resources, "spend": spend, "events": events}
+                "resources": resources, "jobs": jobs, "spend": spend, "events": events}
     finally:
         c.close()
 

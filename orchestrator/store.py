@@ -62,6 +62,22 @@ BEGIN SELECT RAISE(ABORT, 'events is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
 BEGIN SELECT RAISE(ABORT, 'events is append-only'); END;
 
+CREATE TABLE IF NOT EXISTS jobs (
+    id        TEXT PRIMARY KEY,
+    ticket_id TEXT NOT NULL,
+    actor     TEXT NOT NULL,
+    name      TEXT NOT NULL,
+    command   TEXT NOT NULL,
+    resource  TEXT,
+    pid       INTEGER,
+    state     TEXT NOT NULL DEFAULT 'running',  -- running | exited | stopped | lost
+    exit_code INTEGER,
+    log_path  TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_ticket ON jobs(ticket_id);
+
 CREATE TABLE IF NOT EXISTS resources (
     name              TEXT PRIMARY KEY,
     state             TEXT NOT NULL DEFAULT 'free',  -- free | reserved | busy
@@ -264,6 +280,51 @@ class Store:
             self._save(c, t)
             self._event(c, ticket_id, answered_by, "question_answered", {"answer": answer})
             return t
+
+    # -------------------------------------------------------------------- jobs
+
+    def create_job(self, ticket_id: str, actor: str, name: str, command: list[str], log_path: str,
+                   resource: str | None = None, pid: int | None = None, job_id: str | None = None) -> dict[str, Any]:
+        job_id = job_id or uuid.uuid4().hex[:10]
+        with self._tx() as c:
+            c.execute(
+                "INSERT INTO jobs (id, ticket_id, actor, name, command, resource, pid, log_path, started_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (job_id, ticket_id, actor, name, json.dumps(command), resource, pid, log_path, _now()))
+            self._event(c, ticket_id, actor, "job_started", {"job": job_id, "name": name, "resource": resource})
+        return self.get_job(job_id)
+
+    def get_job(self, job_id: str) -> dict[str, Any]:
+        row = self._conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise NotFound(f"job {job_id}")
+        return {**dict(row), "command": json.loads(row["command"])}
+
+    def update_job(self, job_id: str, actor: str, **fields: Any) -> dict[str, Any]:
+        allowed = {"state", "exit_code", "ended_at", "pid"}
+        if not fields or set(fields) - allowed:
+            raise StoreError(f"update_job fields must be within {sorted(allowed)}")
+        with self._tx() as c:
+            sets = ", ".join(f"{k}=?" for k in fields)
+            cur = c.execute(f"UPDATE jobs SET {sets} WHERE id=?", [*fields.values(), job_id])
+            if cur.rowcount == 0:
+                raise NotFound(f"job {job_id}")
+            row = c.execute("SELECT ticket_id FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if "state" in fields:
+                self._event(c, row["ticket_id"], actor, f"job_{fields['state']}",
+                            {"job": job_id, "exit_code": fields.get("exit_code")})
+        return self.get_job(job_id)
+
+    def list_jobs(self, state: str | None = None, ticket_id: str | None = None) -> list[dict[str, Any]]:
+        q, args, where = "SELECT * FROM jobs", [], []
+        for col, val in (("state", state), ("ticket_id", ticket_id)):
+            if val is not None:
+                where.append(f"{col} = ?")
+                args.append(val)
+        if where:
+            q += " WHERE " + " AND ".join(where)
+        return [{**dict(r), "command": json.loads(r["command"])}
+                for r in self._conn.execute(q + " ORDER BY started_at", args)]
 
     # --------------------------------------------------------------- resources
 

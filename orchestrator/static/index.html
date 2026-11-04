@@ -46,8 +46,10 @@ function render(s) {
   $("org").innerHTML = org.length ? rows(org, ([m, ws]) =>
     `<details open><summary><b>${esc(m)}</b> <span class="mut">${ws.length} active worker(s)</span></summary><ul>` +
     rows(ws, w => `<li>${esc(w.worker)} <span class="pill">${esc(w.status)}</span> ${esc(w.title)}</li>`) + `</ul></details>`) : '<span class="mut">no managers yet</span>';
-  $("hw").innerHTML = s.resources.length ? `<table><tr><th>resource</th><th>state</th><th>holder</th><th>safe to stop</th></tr>` +
-    rows(s.resources, r => `<tr><td>${esc(r.name)}</td><td>${esc(r.state)}</td><td>${esc(r.holder_ticket ?? "")}</td><td class="mut">${esc(r.safe_to_stop)}</td></tr>`) + `</table>` : '<span class="mut">none registered</span>';
+  $("hw").innerHTML = (s.resources.length ? `<table><tr><th>resource</th><th>state</th><th>holder</th><th>safe to stop</th></tr>` +
+    rows(s.resources, r => `<tr><td>${esc(r.name)}</td><td>${esc(r.state)}</td><td>${esc(r.holder_ticket ?? "")}</td><td class="mut">${esc(r.safe_to_stop)}</td></tr>`) + `</table>` : '<span class="mut">no resources registered</span>') +
+    (s.jobs.length ? `<table style="margin-top:8px"><tr><th>job</th><th>name</th><th>state</th><th>resource</th></tr>` +
+    rows(s.jobs, j => `<tr><td><code>${esc(j.id)}</code></td><td>${esc(j.name)}</td><td class="${j.state === "exited" && j.exit_code ? "failed" : ""}">${esc(j.state)}${j.exit_code ? " (" + esc(j.exit_code) + ")" : ""}</td><td>${esc(j.resource ?? "")}</td></tr>`) + `</table>` : "");
   const sp = s.spend, tot = sp.input_tokens + sp.output_tokens;
   $("spend").innerHTML = `<div>${tot.toLocaleString()} tokens <span class="mut">(${sp.input_tokens.toLocaleString()} in / ${sp.output_tokens.toLocaleString()} out)</span></div>` +
     `<div class="mut">budget: ${sp.max_tokens ? tot.toLocaleString() + " / " + sp.max_tokens.toLocaleString() + " tokens" : "none"}${sp.max_cost_usd ? ", $" + sp.max_cost_usd + " cap" : ""}</div>`;

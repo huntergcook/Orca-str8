@@ -46,6 +46,15 @@ Order for any need: **registry, then open source, then build.**
 - Acquired code is never executed by the orchestrator and is treated as untrusted until inspected. There is no sandbox yet.
 - Implemented in `orchestrator/tools.py`; roles in `roles/tooling_manager.md` and `roles/workers/tool_scout.md`.
 
+### Python sourcing and hardware execution
+
+- **Any Python is fair game.** Tooling may source code from PyPI (`pypi_info`, `pip_install` into the workspace tool venv, including `git+https://` specs) as well as GitHub clones. Every installed tool is registered with its source and usage.
+- **All workers** can read/write files inside the workspace (orchestrator-managed paths are protected) and `run_python` a workspace script.
+- **Experiment workers** (departments with `resource_leases`) additionally get `list_resources`, `claim_resource`, `release_resource`, `heartbeat_resource` and background **jobs**: `start_job`, `job_status`, `job_tail`, `wait_job`, `stop_job`. A job needs its resource claimed first, and a resource cannot be released while its job runs.
+- The Experiment manager's prompt includes a live **hardware status** (resources, holders, safe-to-stop notes, running jobs), so it always knows what is running before deciding to stop anything.
+- Jobs are plain subprocesses (no shell) logging to `workspace/jobs/<id>/log.txt`. There is no sandbox: scripts can do whatever the user's account can. The human is responsible for a safe harness; agents escalate anything that looks unsafe.
+- Implemented in `orchestrator/hardware.py` and `orchestrator/tools.py`; roles in `roles/experiment_manager.md` and `roles/workers/experiment_runner.md`.
+
 ## 3. Tickets
 
 Tickets are the only way work and information move between agents. See `schemas/ticket.schema.json`.

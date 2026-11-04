@@ -27,6 +27,8 @@ pytest
 - `orchestrator/agent.py`: worker runner (capability retries, refusal policy)
 - `orchestrator/manager.py`: department manager loop (plan, run workers, answer questions, review)
 - `orchestrator/top.py`: top manager (rebuilds context from files each turn)
+- `orchestrator/tools.py`: tool registry, Python/GitHub sourcing, file and job tools for workers
+- `orchestrator/hardware.py`: background jobs and hardware status
 - `orchestrator/memory.py`, `config.py`, `providers.py`, `dashboard.py`
 
 ## License
