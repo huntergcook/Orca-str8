@@ -222,6 +222,14 @@ class TopManager:
                 why = f"watchdog: no activity for {int(age // 60)} min (last event: {last['type']} by {last['actor']})"
                 self.store.add_event(t["id"], "watchdog", "stalled", {"minutes": int(age // 60)})
                 self.memory.append_journal(f"{why}; ticket {t['id']} '{t['title'][:60]}' assignee {t['assignee']}")
+                if self.cfg["policies"].get("watchdog_acts", True) and age >= 2 * limit:
+                    # deal with it: a worker that is dead for twice the stall time goes back to its manager (who retries or
+                    # replaces it); a department ticket that is dead goes to the top manager. Never while it holds a device.
+                    ids = {t["id"], *[k["id"] for k in self.store.list_tickets(parent_id=t["id"])]}
+                    if any(r.get("holder_ticket") in ids for r in self.store.list_resources()):
+                        continue
+                    self.store.escalate(t["id"], "watchdog", why + "; acting on it", kind="technical",
+                                        to="top_manager" if t["parent_id"] is None else "manager")
         except Exception:
             pass                                       # the watchdog must never take the run down
 

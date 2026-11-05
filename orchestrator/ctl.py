@@ -102,6 +102,18 @@ class Ctl:
             idle = (now - datetime.fromisoformat(a["updated_at"])).total_seconds()
             live.append({"agent": a["name"], "dept": a["department"], "ticket": a["ticket_id"], "state": a["state"],
                          "detail": (a["detail"] or "")[:80], "last_seen_s": int(idle), "quiet": idle > quiet_s})
+        # one manager per department: its per-ticket status rows are merged into a single row (freshest heartbeat wins)
+        merged: dict[str, dict[str, Any]] = {}
+        rest: list[dict[str, Any]] = []
+        for x in live:
+            if not x["agent"].startswith("worker") and "manager" in x["agent"]:
+                m = merged.setdefault(x["agent"], {**x, "ticket": [], "quiet": True, "last_seen_s": 10 ** 9})
+                m["ticket"].append(x["ticket"])
+                if x["last_seen_s"] < m["last_seen_s"]:
+                    m.update(state=x["state"], detail=x["detail"], last_seen_s=x["last_seen_s"], quiet=x["quiet"])
+            else:
+                rest.append(x)
+        live = list(merged.values()) + rest
         return {"tickets": rows, "needs_attention": attention,
                 "agents": live, "quiet_agents": [x for x in live if x["quiet"]],
                 "managers_handling": [{k: i[k] for k in ("id", "title", "status", "why")} for i in handled_below],
