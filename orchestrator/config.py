@@ -9,6 +9,8 @@ import yaml
 
 DEFAULTS: dict[str, Any] = {
     "workspace": "./workspace",
+    "mission_file": "config/mission.yaml",   # the mission brief (questionnaire the human fills in); injected into every prompt
+    "notify": {"ntfy": None, "webhook": None, "command": None},   # where the daemon reaches the human (also notifications.log)
     "rules_file": None,          # path (relative to the project) of rules every agent must obey; injected into all prompts
     "code": {                   # the code-writing pipeline (code tickets)
         "repo": None,           # git repo code tickets change (default: the project folder, if it is a git repo)
@@ -55,6 +57,13 @@ DEFAULTS: dict[str, Any] = {
         "max_worker_retries": 2,       # manager retries per worker before it must delegate differently or give up
         "default_rigor": "balanced",
         "verification_is_advisory": True,
+        # persistence (daemon): how hard the harness tries before it gives up or bothers the human
+        "max_restarts": 6,             # times a stopped/crashed manager ticket is restarted before it is escalated
+        "restart_backoff_seconds": 5,  # doubles per restart, capped at 10 minutes
+        "daemon_poll_seconds": 10,     # idle loop sleep
+        "stall_hours": 4,              # no progress anywhere for this long -> the director must change strategy
+        "model_retry_minutes": 30,     # how long to wait before re-trying a model that hit its quota/usage limit
+        "director_timeout_minutes": 20,  # a director turn that takes longer than this counts as a failure
     },
     "verification": {
         "enabled": False,        # gate manager results through independent verifiers
@@ -140,14 +149,17 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 def project_rules(cfg: dict[str, Any]) -> str:
     """The project's mandatory rules (legal, safety, house rules), read fresh each call so edits apply at once.
     Empty if `rules_file` is unset or unreadable."""
+    from .mission import render_charter
+    charter = render_charter(cfg)              # the human's mission brief: every agent sees it, every call
     name = cfg.get("rules_file")
-    if not name:
-        return ""
-    p = Path(name) if Path(name).is_absolute() else Path.cwd() / name
-    try:
-        return p.read_text(encoding="utf-8").strip()[:8000]
-    except OSError:
-        return ""
+    rules = ""
+    if name:
+        p = Path(name) if Path(name).is_absolute() else Path.cwd() / name
+        try:
+            rules = p.read_text(encoding="utf-8").strip()[:8000]
+        except OSError:
+            rules = ""
+    return "\n\n".join(x for x in (charter, rules) if x)
 
 
 def overlay_path(config_path: str | Path) -> Path:

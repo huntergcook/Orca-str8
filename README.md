@@ -86,6 +86,51 @@ folder and say the same thing; it resumes where the project left off.
 
 ---
 
+## Fill in the mission brief first
+
+`python -m orchestrator.init ~/my-project` also writes `config/mission.yaml`: a questionnaire about your goal, how you will know it
+is met (ideally shell commands that exit 0), how rigorous to be, what must never happen, how the harness should behave while you
+are away, which models and machines it may use, and how to reach you. **Every agent gets your answers verbatim on every call**, so
+the goal survives restarts and long runs. No work starts until the required questions are answered. You can fill it in by hand, or
+start your agent and let the director interview you (it asks a few questions at a time and pushes back on vague answers):
+
+```bash
+python -m orchestrator.ctl intake                      # what is unanswered
+python -m orchestrator.ctl intake --answer goal "..."  # record an answer (the director does this for you)
+```
+
+## Walk away: the daemon
+
+Persistence belongs to a daemon, not to a chat session. Your interactive Claude Code / Codex session can end, compact or hit a usage
+limit; the project carries on.
+
+```bash
+python -m orchestrator.daemon --project ~/my-project start     # detached supervisor; restarts the daemon if it dies
+python -m orchestrator.daemon --project ~/my-project status    # phase, tickets, mission state
+python -m orchestrator.daemon --project ~/my-project stop
+python -m orchestrator.daemon --project ~/my-project install   # start at logon (Windows Task Scheduler; prints a systemd unit on Linux)
+```
+
+What it does: runs the departments until nothing is runnable; wakes the **director** (a short, stateless model call, context
+rebuilt from the mission brief + notes + board, so there is nothing to compact) whenever a ticket needs a decision, a department
+finishes, nothing has moved for `policies.stall_hours`, or the board is empty with the goal unmet; restarts a manager that stopped
+or crashed (`policies.max_restarts`, exponential backoff) before escalating it; waits out model usage limits
+(`policies.model_retry_minutes`); parks on `PAUSE` or a budget limit and tells you; and **ends only when the mission's
+`success_checks` pass** (or, with no machine checks, when the director finishes and an independent final verification passes). A
+`finish` before that is refused. Questions only you can answer go to `notify:` (ntfy, a webhook, or a command; always
+`workspace/notifications.log`) while everything else continues on logged assumptions.
+
+The director's model is `models.director`. If it is `external` (the scaffold default, meaning "my interactive agent plays it") the
+daemon uses the manager models for its own director turns, so put a CLI there for unattended runs, e.g.
+`python -m orchestrator.ctl models use-cli claude --tiers director` (with `codex` in the fallback chain). A subscription CLI has
+usage windows, so an unattended run on one will sometimes sleep until a reset.
+
+**Windows:** the daemon asks Windows not to sleep while it runs and puts itself in a Job Object so child processes die with it. The
+Task Scheduler entry starts the supervisor at logon of your user (not boot), because the `claude` and `codex` CLIs keep their
+sign-in in your profile.
+
+---
+
 ## How it works
 
 ```
@@ -288,6 +333,10 @@ Read this before pointing it at anything that matters.
   that always restores the user's real headset settings; verification audited the project's own notes. Most changes
   in the history since then came from what that run exposed. The Claude CLI backend (Haiku) ran there too, until it hit
   the subscription's limit, which is how quota skipping came about.
+- **The daemon** (new): covered by `tests/test_daemon.py` with scripted models (end-to-end completion, failing checks keep it
+  working, refused early finish, pause/quota/stop, crashing cycles, manager restarts and their limit, notifications, the mission
+  gate, the rename migration) and a live chaos run on Linux: supervisor started, daemon killed with `kill -9`, restarted with a new
+  pid. **Not yet exercised on Windows** (Task Scheduler install, sleep prevention, Job Object) or with real CLI director calls.
 - **Not yet live:** the Codex preset (built from OpenAI's CLI reference, never run on a real Codex), real hardware other
   than a PC, macOS/Linux. A built-in chat director (`python -m orchestrator`, for when you have no interactive agent)
   exists but is the least-tested path.

@@ -7,7 +7,7 @@ files and SQLite, so a fresh session can resume with `resume`.
 
     python -m orchestrator.ctl [--config PATH] <command> [args]      (JSON on stdout)
 
-Commands: resume | board | ticket ID | create [--file F | stdin JSON] | run | watch | answer ID TEXT |
+Commands: intake [--answer ID TEXT] | resume | board | ticket ID | create [--file F | stdin JSON] | run | watch | answer ID TEXT |
           retry ID [TEXT] | cancel ID [TEXT] | handoff ID [TEXT] | recover | human TEXT | code list|show|accept|reject|discard | models ... | add-resource NAME [NOTE] | safe-to-stop NAME NOTE |
           release-resource NAME [REASON] | state [--set (stdin)] | log TEXT | finish SUMMARY | pause | unpause
 """
@@ -145,7 +145,33 @@ class Ctl:
 
     # ------------------------------------------------------------------ acting
 
+    def intake(self, answers: list[tuple[str, str]] | None = None, scaffold: bool = False) -> dict[str, Any]:
+        """The mission brief: what is still unanswered, and a way to record the human's answers durably. The director
+        asks the human the unanswered questions (one to three at a time, pushing back on vague answers) and records
+        each answer here; nothing else may edit the brief."""
+        from . import mission
+        if scaffold:
+            mission.scaffold(mission.path_for(self.cfg))
+        for qid, text in answers or []:
+            try:
+                mission.set_answer(self.cfg, qid, json.loads(text) if text.strip().startswith(("[", "{")) else text)
+            except KeyError as e:
+                raise StoreError(str(e.args[0])) from None
+        st = mission.status(self.cfg)
+        if st["exists"]:
+            st["next"] = ("complete: work may begin (`create`, or start the daemon)" if st["complete"] else
+                          "ask the human the unanswered required questions, a few at a time, and challenge vague answers; "
+                          "record each with `ctl intake --answer ID \"TEXT\"`")
+        else:
+            st["next"] = "no mission brief yet: run `ctl intake --scaffold`, then interview the human"
+        st["charter_hash"] = mission.charter_hash(self.cfg) if st["exists"] else None
+        return st
+
     def create(self, spec: dict[str, Any]) -> dict[str, Any]:
+        from . import mission
+        gate = mission.gate_error(self.cfg)
+        if gate:
+            raise StoreError(gate)
         spec = {"worker_role": "worker", **spec}
         tid = self.director.create_ticket(spec)
         if tid is None:
@@ -549,6 +575,9 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
     w.add_argument("--grace", type=float, default=10)
     s = sub.add_parser("state")
     s.add_argument("--set", action="store_true", help="replace state notes with stdin")
+    it = sub.add_parser("intake", help="the mission brief: list unanswered questions, record the human's answers")
+    it.add_argument("--answer", nargs=2, action="append", metavar=("ID", "TEXT"), help="record an answer (repeatable)")
+    it.add_argument("--scaffold", action="store_true", help="create a blank brief if there is none")
     sub.add_parser("log").add_argument("text")
     sub.add_parser("human").add_argument("text")
     m = sub.add_parser("models", help="show/detect/set which models run each role")
@@ -615,6 +644,8 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
             out = ctl.release_resource(a.name, a.reason)
         elif a.cmd == "set-models":
             out = ctl.set_models(a.id, a.manager, a.worker)
+        elif a.cmd == "intake":
+            out = ctl.intake([tuple(x) for x in (a.answer or [])], a.scaffold)
         elif a.cmd == "finish":
             out = ctl.finish(a.summary)
         elif a.cmd in ("pause", "unpause"):

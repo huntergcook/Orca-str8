@@ -12,12 +12,12 @@ from typing import Any
 
 from . import actions
 from .agent import parse_reply
-from .config import model_chain
+from .config import model_chain, project_rules
 from .manager import ROLES_DIR, Manager, load_role
 from .hardware import JobRunner
 from .limits import Halted
 from .memory import Memory, human_log
-from .providers import Provider
+from .providers import Provider, usable
 from .store import Store
 from .verification import Verifier
 
@@ -30,9 +30,15 @@ Reply with exactly one JSON object:
       "rigor": "quick_and_dirty|balanced|rigorous", "worker_role": "<role the dept manager should use>"},
      {"type": "set_state", "text": "<rewrite your state notes: goal, stopping criteria, rigor profile, constraints>"},
      {"type": "log", "text": "<durable note about a human decision or instruction>"},
+     {"type": "answer_ticket", "ticket_id": "...", "text": "<answer to a question a manager is blocked on>"},
+     {"type": "retry_ticket", "ticket_id": "...", "text": "<guidance for the retry>"},
+     {"type": "cancel_ticket", "ticket_id": "...", "text": "<why>"},
+     {"type": "assume", "text": "<an assumption you made instead of asking the human; they can overturn it later>"},
+     {"type": "ask_human", "question": "<only a question that truly needs the human; work continues meanwhile>"},
      {"type": "finish", "summary": "<why the goal is sufficiently met>"}]}
 "say" is required; "actions" may be empty. Ask the human questions when the goal, stopping
-criteria, or acceptable rigor is unclear."""
+criteria, or acceptable rigor is unclear (during intake), but when the human is away prefer `assume` over `ask_human`
+unless the mission brief says otherwise or the matter is safety, spending or a refusal."""
 
 
 class Director:
@@ -46,6 +52,9 @@ class Director:
         self.log_path = human_log(workspace)
         self.models = model_chain(cfg, "director")
         self.finished = False
+        self.finish_gate: Any = None              # daemon: callable -> (ok, reason); a finish only counts if ok
+        self.finish_rejection: str | None = None  # why the last finish request was refused (fed to the next turn)
+        self.notify: Any = None                   # daemon: callable(level, title, body)
         mgr_models, wrk_models = model_chain(cfg, "manager"), model_chain(cfg, "worker")
         self.jobs = JobRunner(store, workspace)
         vcfg = cfg["verification"]
@@ -89,17 +98,25 @@ class Director:
 
     # --------------------------------------------------------------------- turn
 
-    def turn(self, human_text: str) -> str:
-        self._append_log("human", human_text)
-        system = (f"{load_role('director')}\n\n# Departments\n{', '.join(self.managers) or '(none configured)'}\n\n"
-                  f"# Your state notes\n{self.memory.read_state() or '(none yet)'}\n\n"
-                  f"# Recent conversation with the human\n{self._tail_log()}\n\n"
-                  f"# Ticket board\n{self.board()}\n\n{TOP_PROTOCOL}")
+    def _system_prompt(self) -> str:
+        rules = project_rules(self.cfg)
+        rules_section = f"# Project rules and mission brief (binding)\n{rules}\n\n" if rules else ""
+        return (f"{load_role('director')}\n\n{rules_section}# Departments\n{', '.join(self.managers) or '(none configured)'}\n\n"
+                f"# Your state notes\n{self.memory.read_state() or '(none yet)'}\n\n"
+                f"# Recent conversation with the human\n{self._tail_log()}\n\n"
+                f"# Ticket board\n{self.board()}\n\n{TOP_PROTOCOL}")
+
+    def _ask(self, user_text: str, speaker: str) -> str:
+        """One director decision: build the context from files (never from a transcript), call the model chain, apply
+        the actions. `speaker` is who the log shows as having said `user_text`."""
+        self._append_log(speaker, user_text)
+        system = self._system_prompt()
         reply, say = None, ""
         for attempt in range(self.cfg["policies"]["capability_retry_limit"]):
-            model = self.models[min(attempt, len(self.models) - 1)]
+            avail = usable(self.models) or self.models
+            model = avail[min(attempt, len(avail) - 1)]
             c = self.provider.complete(model=model, system=system,
-                                       messages=[{"role": "user", "content": human_text}])
+                                       messages=[{"role": "user", "content": user_text}])
             self.store.record_usage(None, "director", "director", c)
             if c.refused:
                 say = (f"[The model declined this request ({c.refusal_category}). I will not route around "
@@ -118,8 +135,19 @@ class Director:
         self._append_log("director", say)
         for act in reply.get("actions", []):
             self._act(act)
+        return say
+
+    def turn(self, human_text: str) -> str:
+        """The human speaks to the built-in director (python -m orchestrator)."""
+        say = self._ask(human_text, "human")
         self.pump()
         return say
+
+    def event_turn(self, kind: str, text: str) -> str:
+        """The daemon wakes the director for an event (ticket finished, idle, stalled...). No human is speaking and
+        the daemon, not this call, runs the departments afterwards."""
+        self.store.add_event(None, "director", "director_turn", {"event": kind})
+        return self._ask(f"[system event: {kind}]\n{text}", "system")
 
     def create_ticket(self, a: dict[str, Any]) -> str | None:
         """Create a top-level ticket for a department manager. Returns the ticket id."""
@@ -136,14 +164,46 @@ class Director:
 
     def _act(self, a: dict[str, Any]) -> None:
         kind = a.get("type")
+        try:
+            self._act_inner(kind, a)
+        except Exception as e:                      # one bad action must not lose the rest of the director's turn
+            self.store.add_event(None, "director", "bad_action", {"type": kind, "error": f"{type(e).__name__}: {e}"[:300]})
+
+    def _act_inner(self, kind: str | None, a: dict[str, Any]) -> None:
         if kind == "create_ticket":
             self.create_ticket(a)
         elif kind == "set_state":
             self.memory.write_state(str(a.get("text", "")))
         elif kind == "log":
             self.memory.append_journal(str(a.get("text", "")))
+        elif kind == "answer_ticket":
+            actions.answer(self.store, str(a["ticket_id"]), str(a.get("text", "")), "director")
+        elif kind == "retry_ticket":
+            actions.retry(self.store, str(a["ticket_id"]), str(a.get("text", "")), "director")
+        elif kind == "cancel_ticket":
+            actions.cancel(self.store, str(a["ticket_id"]), str(a.get("text", "")), "director")
+        elif kind == "assume":
+            text = str(a.get("text", "")).strip()
+            self.memory.append_journal(f"ASSUMPTION (human not consulted): {text}")
+            self.store.add_event(None, "director", "assumption", {"text": text[:500]})
+        elif kind == "ask_human":
+            q = str(a.get("question", "")).strip()
+            if q:
+                self._append_log("director", f"QUESTION FOR THE HUMAN: {q}")
+                self.store.add_event(None, "director", "human_question", {"question": q[:500]})
+                if self.notify:
+                    self.notify("question", "The director has a question", q)
         elif kind == "finish":
-            self.memory.append_journal(f"FINISHED: {a.get('summary', '')}")
+            summary = str(a.get("summary", ""))
+            if self.finish_gate is not None:
+                ok, why = self.finish_gate()
+                if not ok:
+                    self.finish_rejection = why
+                    self.memory.append_journal(f"FINISH REFUSED (goal not verifiably met): {why}")
+                    self.store.add_event(None, "director", "finish_refused", {"reason": why[:500]})
+                    return
+            self.finish_rejection = None
+            self.memory.append_journal(f"FINISHED: {summary}")
             self.finished = True
 
     def pump(self) -> None:
@@ -157,13 +217,18 @@ class Director:
         last_beat: dict[str, float] = {}               # department -> monotonic time of its last status check
         watch = {"at": 0.0, "warned": {}}              # watchdog state: last scan, ticket id -> last warned event seq
 
+        not_before: dict[str, float] = {}              # ticket id -> monotonic time before which it is not restarted
+
         def one(m: Manager, ticket_id: str) -> None:
             try:
                 m.work(ticket_id)
             except Halted as h:
                 halted.append(h)               # pause / budget: stop the whole run cleanly
             except Exception as e:             # provider outage, bad key, bug: never fail silently
-                self._work_failed(ticket_id, m.name, e)
+                note = f"run error: {type(e).__name__}: {e}"[:500]
+                self.store.add_event(ticket_id, m.name, "run_error", {"error": note})
+                if not self._restart(ticket_id, note, not_before):    # persistence first: retry before escalating
+                    self._work_failed(ticket_id, m.name, e)
 
         with ThreadPoolExecutor(max_workers=limit, thread_name_prefix="ticket") as pool:
             while True:
@@ -175,7 +240,8 @@ class Director:
                     for m in self.managers.values():
                         for status in ("open", "in_progress"):
                             for t in self.store.list_tickets(status=status, assignee=m.name):
-                                if t["id"] not in running and t["parent_id"] is None:
+                                if (t["id"] not in running and t["parent_id"] is None
+                                        and time.monotonic() >= not_before.get(t["id"], 0.0)):
                                     running[t["id"]] = pool.submit(one, m, t["id"])
                 if not halted:
                     self._watchdog(watch)
@@ -184,6 +250,9 @@ class Director:
                     if not running:                    # idle: stay alive, rescan for new tickets and heartbeats
                         time.sleep(5)
                         continue
+                if not running and not halted and any(v > time.monotonic() for v in not_before.values()):
+                    time.sleep(2)                      # everything left is backing off before a restart: wait, do not exit
+                    continue
                 if not running:
                     break
                 wait(list(running.values()), return_when=FIRST_COMPLETED, timeout=5)
@@ -193,10 +262,25 @@ class Director:
                     # forever; escalate it instead
                     t = self.store.get_ticket(tid)
                     if t["status"] == "in_progress" and not halted:
-                        self.store.escalate(tid, t["assignee"], "its manager stopped without an outcome", kind="technical",
-                                            to="director")
+                        if not self._restart(tid, "its manager stopped without an outcome", not_before):
+                            self.store.escalate(tid, t["assignee"], "its manager stopped without an outcome "
+                                                "(restarts exhausted)", kind="technical", to="director")
         if halted:
             raise halted[0]
+
+    def _restart(self, ticket_id: str, reason: str, not_before: dict[str, float]) -> bool:
+        """Persistence: a manager that stopped or crashed is restarted (with exponential backoff) instead of being
+        escalated at once. Its state lives in files and the ticket tree, so the restart resumes where it stopped.
+        Returns False once `policies.max_restarts` restarts of this ticket are used up; the caller then escalates."""
+        pol = self.cfg["policies"]
+        used = sum(1 for e in self.store.events(ticket_id) if e["type"] == "restarted")
+        if used >= int(pol.get("max_restarts", 6)):
+            return False
+        delay = min(float(pol.get("restart_backoff_seconds", 5)) * (2 ** used), 600.0)
+        self.store.add_event(ticket_id, "orchestrator", "restarted", {"n": used + 1, "reason": reason[:300],
+                                                                      "delay_s": delay})
+        not_before[ticket_id] = time.monotonic() + delay
+        return True
 
     def _watchdog(self, watch: dict[str, Any]) -> None:
         """Everyone must be working all the time: every minute, find tickets 'in_progress' that have had no event for

@@ -78,15 +78,26 @@ README = """\
 
 Project run by the orchestrator at `{orch}`.
 
+0. **Fill in `config/mission.yaml`** (the mission brief): your goal, success criteria, rigor, how it should behave when
+   you are away. Every agent reads it on every call, and no work starts until its required questions are answered. Or
+   start your agent and let the director interview you.
 1. Copy `.env.example` to `.env` and add your `DEEPSEEK_API_KEY`.
 2. Pre-flight: `python -m orchestrator.smoke`
 3. Dashboard (second terminal): `python -m orchestrator.dashboard` then open http://127.0.0.1:8080
 4. Start your agent in this folder: Claude Code (`claude`, then `/orchestrate <what you want done>`) or Codex (`codex`, then "act as the orchestrator director: <what you want done>"; it reads AGENTS.md).
 5. No API keys? Run `python -m orchestrator.ctl models use-cli codex` (or `claude`) to run every role on that CLI.
 
+To let it run unattended until the goal is met: `python -m orchestrator.daemon start` (restarts itself if it dies), and
+`python -m orchestrator.daemon install` to start it at logon. `python -m orchestrator.daemon status` shows where it is.
+
 State lives in `workspace/` (database, memory notes, tool library, jobs, reports).
 Create `workspace/PAUSE` to halt all model calls; delete it to resume.
 """
+
+
+def mission_text() -> str:
+    from .mission import _dump, template_data
+    return _dump(template_data())
 
 
 def command_text(project: str | Path | None = None) -> str:
@@ -100,6 +111,7 @@ def command_text(project: str | Path | None = None) -> str:
         # "orchestrator" package cannot shadow this one
         src = src.replace("python -m orchestrator.ctl", f'python -P -m orchestrator.ctl --project "{proj}"')
         src = src.replace("workspace/run.log", f'"{Path(proj).as_posix()}/workspace/run.log"')
+        src = src.replace("python -m orchestrator.daemon", f'python -P -m orchestrator.daemon --project "{proj}"')
         src = src.replace("python -m orchestrator.smoke", f'python -P -m orchestrator.smoke --project "{proj}"')
         src = src.replace("python -m orchestrator.dashboard", f'python -P -m orchestrator.dashboard --project "{proj}"')
         src = src.replace("**Always run every `ctl` command from the project folder, which is this session's working directory.",
@@ -128,6 +140,7 @@ def scaffold(target: str | Path, force: bool = False) -> list[Path]:
         raise FileExistsError(f"{root} is not empty (use --force to add missing files)")
     files = {
         "config/orchestrator.yaml": CONFIG.format(orch=ORCH_HOME),
+        "config/mission.yaml": mission_text(),
         ".env.example": ENV_EXAMPLE,
         ".gitignore": GITIGNORE,
         "README.md": README.format(name=root.name, orch=ORCH_HOME),

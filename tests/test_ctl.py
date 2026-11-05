@@ -126,7 +126,8 @@ def test_smoke_skips_external_tier():
 
 def test_provider_crash_escalates_instead_of_hanging(tmp_path):
     # MockProvider with an empty script raises mid-run, like a bad key or API outage would.
-    ctl, _ = make(tmp_path, [j(action="delegate", tickets=[WORKER])])     # then the worker call explodes
+    ctl, cfg = make(tmp_path, [j(action="delegate", tickets=[WORKER])])     # then the worker call explodes
+    cfg["policies"]["max_restarts"] = 0                # no restart budget: the crash must surface at once (see test_daemon.py)
     tid = ctl.create(SPEC)["ticket_id"]
     out = ctl.run()                                    # must return, not raise
     row = next(t for t in out["tickets"] if t["id"] == tid)

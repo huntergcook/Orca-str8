@@ -2,7 +2,7 @@
 
 A general-purpose, hierarchical LLM orchestrator modeled on a research lab. Small agent scopes, durable memory, and a ticket system replace long-running contexts and compaction.
 
-Status: design draft. No runtime code yet.
+Status: implemented (see README); this document records the design. Persistence, the mission brief and the director's daemon are described in section 9.
 
 ## 1. Goals
 
@@ -141,3 +141,21 @@ Goal: never rely on a long context.
 5. Config loader (departments, models, budgets).
 6. Dashboard (read-only).
 7. Departments one at a time, Tooling first.
+
+## 9. Persistence and the mission brief
+
+- **Persistence is a property of a daemon, not of any LLM session.** `orchestrator/daemon.py` owns the loop. It runs the departments
+  until idle, then decides what happens next: wake the director for an event, check completion, wait out a halt, or notify the human.
+  A supervisor process restarts it if it dies; the OS (Task Scheduler / systemd) restarts the supervisor.
+- **The director is a stateless function.** `Director.event_turn` builds its context from files (mission brief, notes, human log tail,
+  board) and applies JSON actions (`create_ticket`, `answer_ticket`, `retry_ticket`, `cancel_ticket`, `assume`, `ask_human`, `finish`).
+  An interactive Claude Code / Codex session is an optional client of the same state.
+- **Completion is checked, not declared.** The mission's `success_checks` (shell commands) decide; without them an independent final
+  verification ticket must pass. `finish` is refused until then. An empty board never ends the run: the director is asked for a gap
+  analysis, and if it produces no work three times the human is told and token use stops.
+- **Restart before escalate.** A manager that stops or crashes is restarted with exponential backoff up to `policies.max_restarts`;
+  only then does the problem climb the chain. Quota-limited models are retried after `policies.model_retry_minutes`.
+- **The mission brief is the charter.** `config/mission.yaml` is written only by the human (or the director on their behalf through
+  `ctl intake`), is injected into every prompt via `project_rules`, and gates new work until its required questions are answered.
+- **Rename.** The top manager is now the director (`models.director`; the old `top` tier, `top_manager` rows and memory folder are
+  migrated; the append-only event log keeps historical names).

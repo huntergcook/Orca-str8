@@ -143,6 +143,7 @@ def test_retry_limit_is_enforced_and_manager_must_choose_something_else(store, t
 def test_worker_problems_never_reach_the_director_or_human_while_the_manager_handles_them(tmp_path):
     cfg = load_config(None)
     cfg["departments"] = {"research": {}}
+    cfg["policies"]["max_restarts"] = 0              # no restart budget: the crash must surface at once (see test_daemon.py)
     ctl = Ctl(cfg, tmp_path, MockProvider([
         j(action="delegate", tickets=[WORKER]),
         j(action="escalate", kind="blocked", reason="cannot find the file"),     # worker is stuck
