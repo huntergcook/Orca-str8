@@ -1,5 +1,6 @@
 """Mission brief, persistence (daemon, restarts, halts) and the director rename."""
 import json
+import os
 import sqlite3
 import sys
 
@@ -214,7 +215,7 @@ def test_a_crashing_cycle_is_logged_and_retried_not_fatal(tmp_path):
 def test_a_second_daemon_for_the_same_project_is_refused(tmp_path):
     a, cfg, _ = daemon(tmp_path, [])
     from orchestrator.util import atomic_write, process_stamp
-    atomic_write(a.workspace / "DAEMON_RUN", process_stamp(1))      # pid 1 stands in for another live daemon
+    atomic_write(a.workspace / "DAEMON_RUN", process_stamp(os.getppid()))   # our parent stands in for another live daemon (pid 1 doesn't exist on Windows)
     assert a.run(max_ticks=1) == "already_running"
 
 
