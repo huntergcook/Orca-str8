@@ -5,6 +5,7 @@ never from an accumulating chat transcript, so long sessions don't need compacti
 """
 from __future__ import annotations
 
+import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
@@ -148,6 +149,10 @@ class TopManager:
         limit = max(1, int(self.cfg["policies"].get("max_parallel_tickets", 8)))
         running: dict[str, Future] = {}
         halted: list[Halted] = []
+        keepalive = bool(self.cfg["policies"].get("keepalive", False))
+        beat_secs = 60 * float(self.cfg["policies"].get("heartbeat_minutes", 30))
+        last_beat: dict[str, float] = {}               # department -> monotonic time of its last status check
+        watch = {"at": 0.0, "warned": {}}              # watchdog state: last scan, ticket id -> last warned event seq
 
         def one(m: Manager, ticket_id: str) -> None:
             try:
@@ -169,6 +174,13 @@ class TopManager:
                             for t in self.store.list_tickets(status=status, assignee=m.name):
                                 if t["id"] not in running and t["parent_id"] is None:
                                     running[t["id"]] = pool.submit(one, m, t["id"])
+                if not halted:
+                    self._watchdog(watch)
+                if keepalive and not halted and not self.finished:
+                    self._heartbeats(last_beat, beat_secs)
+                    if not running:                    # idle: stay alive, rescan for new tickets and heartbeats
+                        time.sleep(5)
+                        continue
                 if not running:
                     break
                 wait(list(running.values()), return_when=FIRST_COMPLETED, timeout=5)
@@ -182,6 +194,61 @@ class TopManager:
                                             to="top_manager")
         if halted:
             raise halted[0]
+
+    def _watchdog(self, watch: dict[str, Any]) -> None:
+        """Everyone must be working all the time: every minute, find tickets 'in_progress' that have had no event for
+        `stall_minutes` and flag them. The flag is a 'stalled' event on the ticket (managers see it in their ticket events
+        and the heartbeat status check) plus a top-manager journal line; nothing is escalated or killed, because a
+        long hardware job may be healthy. Each stall is flagged once per quiet period."""
+        from datetime import datetime, timezone
+        now = time.monotonic()
+        if now - watch["at"] < 60:
+            return
+        watch["at"] = now
+        limit = 60 * float(self.cfg["policies"].get("stall_minutes", 30))
+        try:
+            for t in self.store.list_tickets(status="in_progress"):
+                evs = self.store.events(t["id"])
+                last = evs[-1] if evs else None
+                if last is None or watch["warned"].get(t["id"]) == last["seq"]:
+                    continue
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(last["ts"])).total_seconds()
+                if age < limit:
+                    continue
+                watch["warned"][t["id"]] = last["seq"]
+                why = f"watchdog: no activity for {int(age // 60)} min (last event: {last['type']} by {last['actor']})"
+                self.store.add_event(t["id"], "watchdog", "stalled", {"minutes": int(age // 60)})
+                self.memory.append_journal(f"{why}; ticket {t['id']} '{t['title'][:60]}' assignee {t['assignee']}")
+        except Exception:
+            pass                                       # the watchdog must never take the run down
+
+    def _heartbeats(self, last_beat: dict[str, float], beat_secs: float) -> None:
+        """Keepalive: every `heartbeat_minutes` each department manager gets a status-check ticket (unless it already
+        has one open), so managers keep the work moving instead of the run ending when departments go idle."""
+        now = time.monotonic()
+        for dept, m in self.managers.items():
+            if now - last_beat.get(dept, -beat_secs) < beat_secs:
+                continue
+            last_beat[dept] = now
+            mine = self.store.list_tickets(assignee=m.name)
+            if any(t["title"].startswith("Status check") and t["status"] in ("open", "in_progress") for t in mine):
+                continue
+            self.store.create_ticket({
+                "title": f"Status check: {dept}",
+                "context": (
+                    f"Periodic heartbeat for the {dept} department; you are a standing manager, not a one-shot worker. "
+                    "1) Read your memory state/journal and the project goal. 2) Review every ticket and worker in your "
+                    "department: anything in progress with no recent events, failed, escalated or waiting on a question "
+                    "is yours to unblock now (retry with guidance, change model, split, or escalate with a clear reason). "
+                    "3) Triage follow_ups of your finished tickets. 4) If your department has no open work, propose the "
+                    "next most valuable tickets toward the goal as a concise list in your result (the top manager "
+                    "creates them). 5) Prefer open-source code, libraries and public documentation (use the web fetch "
+                    "tool when registered) over inventing from scratch; record licenses. Keep this check short."),
+                "acceptance_criteria": ["every stuck or failed item in the department has an owner and a next step",
+                                        "next-work proposals listed, or 'none needed' with a reason"],
+                "return_spec": {"format": "short report", "description": "stuck items handled, proposals"},
+                "rigor": "quick_and_dirty", "worker_role": "worker", "assignee": m.name, "cc": ["top_manager"]},
+                actor="orchestrator")
 
     def _work_failed(self, ticket_id: str, actor: str, err: Exception) -> None:
         """A manager crashed mid-ticket. Escalate it and its unfinished workers so the failure is
