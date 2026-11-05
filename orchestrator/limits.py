@@ -30,6 +30,7 @@ def _price(prices: dict[str, Any], model: str) -> dict[str, Any] | None:
 def _rates(p: dict[str, Any], off_peak: bool) -> dict[str, float]:
     """$ per million tokens. An `off_peak` entry is either a multiplier (0.5 = half price) or its own rate table."""
     base = {k: float(p.get(k, p.get("input", 0) if k == "cache_hit" else 0)) for k in ("input", "cache_hit", "output")}
+    base["cache_write"] = float(p.get("cache_write", base["input"] * 1.25))   # Anthropic's 5-minute cache write
     if not off_peak or "off_peak" not in p:
         return base
     op = p["off_peak"]
@@ -39,9 +40,11 @@ def _rates(p: dict[str, Any], off_peak: bool) -> dict[str, float]:
 
 
 def _cost(u: dict[str, int], r: dict[str, float]) -> float:
-    hit = u.get("cache_hit_tokens", 0)
-    miss = max(0, u.get("input_tokens", 0) - hit)
-    return (miss * r["input"] + hit * r["cache_hit"] + u.get("output_tokens", 0) * r["output"]) / 1_000_000
+    """input_tokens counts the whole prompt: cache reads + cache writes + the uncached rest."""
+    hit, wr = u.get("cache_hit_tokens", 0) or 0, u.get("cache_write_tokens", 0) or 0
+    miss = max(0, u.get("input_tokens", 0) - hit - wr)
+    return (miss * r["input"] + hit * r["cache_hit"] + wr * r.get("cache_write", r["input"] * 1.25)
+            + u.get("output_tokens", 0) * r["output"]) / 1_000_000
 
 
 def estimate_cost(by_model: dict[str, dict[str, int]], prices: dict[str, Any]) -> float | None:

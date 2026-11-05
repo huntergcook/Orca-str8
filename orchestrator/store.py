@@ -237,7 +237,8 @@ class Store:
         with self._tx() as c:
             self._event(c, ticket_id, actor, "usage", {
                 "model": getattr(completion, "model", ""), "input_tokens": tin, "output_tokens": tout,
-                "cache_hit_tokens": int(getattr(completion, "cache_hit_tokens", 0) or 0), "department": department})
+                "cache_hit_tokens": int(getattr(completion, "cache_hit_tokens", 0) or 0),
+                "cache_write_tokens": int(getattr(completion, "cache_write_tokens", 0) or 0), "department": department})
             if agent_id:
                 c.execute("UPDATE agents SET calls = calls + 1, tokens_in = tokens_in + ?, tokens_out = tokens_out + ?"
                           " WHERE agent_id = ?", (tin, tout, agent_id))
@@ -255,10 +256,11 @@ class Store:
                 "SELECT json_extract(payload, '$.model') AS model, COUNT(*) AS calls,"
                 " COALESCE(SUM(json_extract(payload, '$.input_tokens')), 0) AS tin,"
                 " COALESCE(SUM(json_extract(payload, '$.output_tokens')), 0) AS tout,"
-                " COALESCE(SUM(json_extract(payload, '$.cache_hit_tokens')), 0) AS hit"
+                " COALESCE(SUM(json_extract(payload, '$.cache_hit_tokens')), 0) AS hit,"
+                " COALESCE(SUM(json_extract(payload, '$.cache_write_tokens')), 0) AS wr"
                 " FROM events WHERE type = 'usage' GROUP BY model"):
             out[r["model"] or "?"] = {"calls": r["calls"], "input_tokens": r["tin"], "output_tokens": r["tout"],
-                                      "cache_hit_tokens": r["hit"]}
+                                      "cache_hit_tokens": r["hit"], "cache_write_tokens": r["wr"]}
         return out
 
     def usage_by_model_split(self, off_peak_utc: tuple[str, str]) -> dict[str, dict[str, dict[str, int]]]:
@@ -269,14 +271,16 @@ class Store:
         out: dict[str, dict[str, dict[str, int]]] = {}
         for r in self._conn.execute(
                 "SELECT model, " + cond + " AS off, COUNT(*) AS calls, COALESCE(SUM(tin), 0) AS tin,"
-                " COALESCE(SUM(tout), 0) AS tout, COALESCE(SUM(hit), 0) AS hit FROM ("
+                " COALESCE(SUM(tout), 0) AS tout, COALESCE(SUM(hit), 0) AS hit, COALESCE(SUM(wr), 0) AS wr FROM ("
                 "  SELECT json_extract(payload, '$.model') AS model, substr(ts, 12, 5) AS hm,"
                 "   json_extract(payload, '$.input_tokens') AS tin, json_extract(payload, '$.output_tokens') AS tout,"
-                "   json_extract(payload, '$.cache_hit_tokens') AS hit FROM events WHERE type = 'usage')"
+                "   json_extract(payload, '$.cache_hit_tokens') AS hit, json_extract(payload, '$.cache_write_tokens') AS wr"
+                "   FROM events WHERE type = 'usage')"
                 " GROUP BY model, off", {"s": start, "e": end}):
             period = "off_peak" if r["off"] else "peak"
             out.setdefault(r["model"] or "?", {})[period] = {
-                "calls": r["calls"], "input_tokens": r["tin"], "output_tokens": r["tout"], "cache_hit_tokens": r["hit"]}
+                "calls": r["calls"], "input_tokens": r["tin"], "output_tokens": r["tout"], "cache_hit_tokens": r["hit"],
+                "cache_write_tokens": r["wr"]}
         return out
 
     def first_event_ts(self) -> str | None:

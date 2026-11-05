@@ -114,3 +114,74 @@ def test_transport_errors_that_never_clear_give_a_clear_error_and_other_errors_a
 
     with pytest.raises(ValueError, match="real bug"):
         ds(bug).complete(model="m", system="s", messages=[])
+
+
+# ---------------------------------------------------------------- Claude API: caching, usage, credit limits
+
+class _FakeStream:
+    def __init__(self, msg):
+        self.msg = msg
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def get_final_message(self):
+        return self.msg
+
+
+class _FakeAnthropic:
+    def __init__(self, msg=None, error=None):
+        self.kwargs, self.msg, self.error = None, msg, error
+        self.messages = self
+
+    def stream(self, **kw):
+        self.kwargs = kw
+        if self.error:
+            raise self.error
+        return _FakeStream(self.msg)
+
+
+def _msg(text="hi", stop="end_turn", inp=100, out=20, read=0, write=0):
+    from types import SimpleNamespace as NS
+    return NS(content=[NS(type="thinking", thinking="..."), NS(type="text", text=text)], stop_reason=stop,
+              usage=NS(input_tokens=inp, output_tokens=out, cache_read_input_tokens=read,
+                       cache_creation_input_tokens=write))
+
+
+def test_anthropic_requests_use_prompt_caching_and_count_the_whole_prompt():
+    from orchestrator.providers import AnthropicProvider
+    fake = _FakeAnthropic(_msg("answer", inp=50, out=10, read=9000, write=1000))
+    c = AnthropicProvider(client=fake).complete(model="claude-haiku-5-5", system="role and protocol",
+                                                messages=[{"role": "user", "content": "q"}])
+    assert fake.kwargs["cache_control"] == {"type": "ephemeral"}                       # automatic tail caching
+    assert fake.kwargs["system"] == [{"type": "text", "text": "role and protocol", "cache_control": {"type": "ephemeral"}}]
+    assert c.text == "answer"                                                            # thinking blocks dropped
+    assert (c.input_tokens, c.cache_hit_tokens, c.cache_write_tokens, c.output_tokens) == (10050, 9000, 1000, 10)
+
+
+def test_anthropic_out_of_credit_is_model_unavailable_and_other_errors_pass_through():
+    from orchestrator.providers import AnthropicProvider, ModelUnavailable
+
+    class APIErr(Exception):
+        def __init__(self, msg, status):
+            super().__init__(msg)
+            self.status_code = status
+
+    credit = APIErr("Your credit balance is too low to access the Anthropic API.", 400)
+    with pytest.raises(ModelUnavailable):
+        AnthropicProvider(client=_FakeAnthropic(error=credit)).complete(model="m", system="", messages=[])
+    with pytest.raises(APIErr):
+        AnthropicProvider(client=_FakeAnthropic(error=APIErr("invalid request: bad field", 400))).complete(
+            model="m", system="", messages=[])
+
+
+def test_cache_writes_and_reads_are_priced_separately():
+    from orchestrator.limits import estimate_cost
+    u = {"m": {"input_tokens": 10_000_000, "cache_hit_tokens": 8_000_000, "cache_write_tokens": 1_000_000,
+               "output_tokens": 1_000_000}}
+    prices = {"m": {"input": 0.10, "cache_hit": 0.01, "output": 0.50}}                  # Haiku 5.5 rates
+    # 1M uncached * 0.10 + 8M reads * 0.01 + 1M writes * 0.125 (1.25x input) + 1M out * 0.50
+    assert estimate_cost(u, prices) == pytest.approx(0.10 + 0.08 + 0.125 + 0.50)

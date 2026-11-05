@@ -38,6 +38,7 @@ class Completion:
     output_tokens: int = 0
     model: str = ""
     cache_hit_tokens: int = 0       # input tokens served from the provider's prompt cache (cheaper)
+    cache_write_tokens: int = 0     # input tokens written to the prompt cache (Anthropic: 1.25x the input rate)
 
 
 class Provider(Protocol):
@@ -79,21 +80,37 @@ class AnthropicProvider:
 
     def complete(self, *, model: str, system: str, messages: list[dict[str, Any]],
                  max_tokens: int = 16000) -> Completion:
-        # Stream so large max_tokens don't hit HTTP timeouts.
-        with self.client.messages.stream(model=model, max_tokens=max_tokens,
-                                         system=system, messages=messages) as stream:
-            msg = stream.get_final_message()
+        # Prompt caching: an explicit breakpoint after the static system prompt (role, protocol, tool list: identical
+        # on every call of an agent) plus top-level automatic caching, which moves a breakpoint to the end of the
+        # growing conversation. Workers resend their whole conversation each call, so most input becomes cache reads.
+        kwargs: dict[str, Any] = {"model": model, "max_tokens": max_tokens, "messages": messages,
+                                  "cache_control": {"type": "ephemeral"}}
+        if system:
+            kwargs["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+        try:
+            with self.client.messages.stream(**kwargs) as stream:   # stream: large max_tokens never time out
+                msg = stream.get_final_message()
+        except Exception as e:
+            # out of credit, or a usage/spend limit: the caller skips this model for the rest of the run
+            if getattr(e, "status_code", None) is not None and _LIMIT_RE.search(str(e)):
+                raise ModelUnavailable(f"Anthropic {getattr(e, 'status_code', '')}: {str(e)[:300]}") from e
+            raise
         text = "".join(b.text for b in msg.content if b.type == "text")
         refused = msg.stop_reason == "refusal"
         details = getattr(msg, "stop_details", None)
+        u = msg.usage
+        read = int(getattr(u, "cache_read_input_tokens", 0) or 0)
+        write = int(getattr(u, "cache_creation_input_tokens", 0) or 0)
         return Completion(
             text=text,
             refused=refused,
             refusal_category=getattr(details, "category", None) if refused else None,
-            input_tokens=msg.usage.input_tokens,
-            output_tokens=msg.usage.output_tokens,
+            # Anthropic's input_tokens excludes cached tokens; count the whole prompt, like other providers do
+            input_tokens=int(u.input_tokens or 0) + read + write,
+            output_tokens=int(u.output_tokens or 0),
             model=model,
-            cache_hit_tokens=int(getattr(msg.usage, "cache_read_input_tokens", 0) or 0),
+            cache_hit_tokens=read,
+            cache_write_tokens=write,
         )
 
 
