@@ -455,6 +455,14 @@ class Manager:
                     raise StoreError(f"code ticket {spec.get('title', '?')!r} is not usable: " + "; ".join(problems))
                 if self.code_repo is None:
                     raise StoreError("code tickets need a git repository (set code.repo in the config)")
+        code_specs = [CodeSpec.from_ticket(s) for s in d.get("tickets", []) if isinstance(s, dict) and s.get("code")]
+        ccfg = self.cfg.get("code") or {}
+        if code_specs and ccfg.get("preflight", True):
+            self._status(ticket_id, "checking", f"pre-checking acceptance commands of {len(code_specs)} code ticket(s)")
+            bad = self.code_repo.scratch_preflight(code_specs, float(ccfg.get("preflight_timeout", 60)))
+            if bad:                       # no worker would ever pass these: send them back before spending anything
+                raise StoreError("acceptance commands that cannot run as written (nothing was delegated): "
+                                 + " | ".join(bad))
         for spec in d.get("tickets", []):
             spec = dict(spec)
             if spec.get("code") is not None:

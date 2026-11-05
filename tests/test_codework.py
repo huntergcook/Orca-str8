@@ -609,3 +609,49 @@ def test_build_output_a_worker_created_is_never_committed():
         assert is_build_output(p), p
     for p in ("plugin/src/perf.cpp", "tools/perf_report.py", "README.md", "builders.md", "src/release_notes.txt"):
         assert not is_build_output(p), p
+
+
+# ------------------------------------------------------------------------- acceptance commands are pre-checked
+
+def test_preflight_flags_commands_that_cannot_run_and_passes_ones_that_merely_fail(repo, repo_dir):
+    (repo_dir / "tools").mkdir()
+    (repo_dir / "tools" / "needs_arg.py").write_text(
+        "import argparse\nap = argparse.ArgumentParser()\nap.add_argument('test')\nap.parse_args()\n")
+    git(repo_dir, "add", "-A")
+    git(repo_dir, "commit", "-q", "-m", "tool")
+    ok_fail = CodeSpec(["src/calc.py"], [PYTEST_CMD])                       # runs and fails before the fix: fine
+    usage = CodeSpec(["src/calc.py"], ["python tools/needs_arg.py"])           # usage error: never passes
+    missing = CodeSpec(["src/calc.py"], ["python tools/nope.py"])               # script missing, not the worker's
+    own_new = CodeSpec(["tools/new_tool.py"], ["python tools/new_tool.py"])     # the worker will create it: fine
+    no_prog = CodeSpec(["src/calc.py"], ["definitely-not-a-program-xyz --run"])
+    assert repo.scratch_preflight([ok_fail, own_new]) == []
+    bad = repo.scratch_preflight([usage, missing, no_prog])
+    assert len(bad) == 3, bad
+    assert "usage error" in bad[0] and "does not exist" in bad[1] and "not found" in bad[2]
+    assert "orch-preflight" not in git(repo_dir, "worktree", "list")          # the scratch checkout is gone
+
+
+def test_a_delegation_with_an_unrunnable_acceptance_command_is_sent_back_before_any_worker_starts(repo, repo_dir, tmp_path):
+    store = Store(tmp_path / "s.db")
+    cfg = load_config(None)
+    cfg["code"] = {**cfg.get("code", {}), "repo": str(repo_dir), "base_branch": "main",
+                   "worktrees_dir": str(tmp_path / "worktrees")}
+    first = []
+
+    class P:
+        def complete(self, *, model, system, messages, max_tokens=16000):
+            u = messages[0]["content"]
+            first.append(u)
+            if "Plan the work" in u and len([x for x in first if "Plan the work" in x]) == 1:
+                return Completion(text=j(action="delegate", tickets=[{
+                    "title": "fix", "context": "c", "acceptance_criteria": ["a"], "return_spec": {"format": "f", "description": "d"},
+                    "code": {"allowed_paths": ["src/calc.py"], "acceptance": ["definitely-not-a-program-xyz"]}}]), model=model)
+            return Completion(text=j(action="done", result={"report": "gave up"}), model=model)
+
+    m = Manager("software_manager", store, P(), cfg, tmp_path, "role", ["m"], ["w"], writes_code=True)
+    t = store.create_ticket({"title": "T", "assignee": "software_manager", "worker_role": "w", "context": "c",
+                             "acceptance_criteria": ["a"], "return_spec": {"format": "f", "description": "d"}}, "top_manager")
+    m.work(t["id"])
+    assert store.list_tickets(parent_id=t["id"]) == []                        # nothing was delegated
+    assert any("cannot run as written" in u for u in first)                   # the manager was told why
+    store.close()

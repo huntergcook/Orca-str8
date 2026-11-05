@@ -165,6 +165,26 @@ class CodeRepo:
     def _branch_exists(self, name: str) -> bool:
         return bool(_git(["branch", "--list", name], self.repo).strip())
 
+    def scratch_preflight(self, specs: list["CodeSpec"], timeout: float = 60) -> list[str]:
+        """Run preflight_acceptance for each spec in a throwaway checkout of what new branches start from."""
+        import shutil, tempfile, uuid
+        ref = self.integration_branch if self._branch_exists(self.integration_branch) else self.base_branch
+        path = Path(tempfile.gettempdir()) / f"orch-preflight-{uuid.uuid4().hex[:8]}"
+        with self._lock:
+            _git(["worktree", "add", "--detach", str(path), ref], self.repo)
+        try:
+            out = []
+            for spec in specs:
+                out += preflight_acceptance(spec.acceptance, path, spec.allowed_paths, timeout)
+            return out
+        finally:
+            with self._lock:
+                try:
+                    _git(["worktree", "remove", "--force", str(path)], self.repo)
+                except CodeError:
+                    shutil.rmtree(path, ignore_errors=True)
+                    _git(["worktree", "prune"], self.repo)
+
     def worktree_path(self, ticket_id: str) -> Path:
         return self.worktrees_dir / ticket_id
 
@@ -383,6 +403,49 @@ def run_commands(commands: list[str], cwd: Path, timeout: float) -> list[dict[st
         except subprocess.TimeoutExpired:
             results.append({"name": cmd, "ok": False, "detail": f"timed out after {timeout:.0f}s"})
     return results
+
+
+# Signs that an acceptance command cannot run at all (as opposed to failing because the work is not done yet).
+_NOT_FOUND_RE = re.compile(r"is not recognized as an internal or external command|command not found|"
+                           r"The system cannot find the path specified", re.I)
+_CANT_OPEN_RE = re.compile(r"can't open file '([^']+)'", re.I)
+_USAGE_RE = re.compile(r"^usage: |error: the following arguments are required|error: unrecognized arguments|"
+                       r"error: argument ", re.I | re.M)
+_SCRIPT_RE = re.compile(r"python[\w.]*(?:\s+-\S+)*\s+([\w./\-]+\.py)")
+
+
+def _in_scope(path: str, root: Path, allowed: list[str]) -> bool:
+    p = Path(path)
+    try:
+        rel = p.resolve().relative_to(root.resolve()).as_posix() if p.is_absolute() else p.as_posix()
+    except ValueError:
+        return False
+    rel = rel[2:] if rel.startswith("./") else rel
+    return any(glob_match(rel, a) for a in allowed)
+
+
+def preflight_acceptance(commands: list[str], root: Path, allowed: list[str], timeout: float = 60) -> list[str]:
+    """Run each acceptance command once BEFORE a worker starts and report the ones that cannot run as written: the
+    program is not found, a script that will not exist, or a usage error. A command that runs and fails is fine (it
+    should fail before the work is done); one that times out is assumed to run. A missing script or tool inside the
+    ticket's own allowed_paths is fine too: the worker is expected to create it."""
+    problems = []
+    for res in run_commands(list(dict.fromkeys(commands)), root, timeout):
+        if res["ok"] or res["detail"].startswith("timed out"):
+            continue
+        cmd, out = res["name"], res["detail"]
+        rc = out.splitlines()[0].replace("exit ", "") if out else ""
+        script = _SCRIPT_RE.search(cmd)
+        own_script = bool(script and _in_scope(script.group(1), root, allowed))
+        m = _CANT_OPEN_RE.search(out)
+        if m and not _in_scope(m.group(1), root, allowed):
+            problems.append(f"{cmd!r} cannot run: the script {m.group(1)!r} does not exist and is outside allowed_paths")
+        elif (rc in ("127", "9009") or _NOT_FOUND_RE.search(out)) and not own_script:
+            problems.append(f"{cmd!r} cannot run: program or path not found ({out.splitlines()[-1][:160] if out else rc})")
+        elif rc == "2" and _USAGE_RE.search(out) and not own_script:
+            usage = next((l for l in out.splitlines() if _USAGE_RE.search(l)), "")[:200]
+            problems.append(f"{cmd!r} is not a valid command line (usage error: {usage}); name the exact test or arguments")
+    return problems
 
 
 def run_gates(repo: CodeRepo, ticket_id: str, spec: CodeSpec, code_cfg: dict[str, Any]) -> list[dict[str, Any]]:
