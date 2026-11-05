@@ -188,6 +188,7 @@ class Ctl:
             self.lock_path.unlink(missing_ok=True)
 
     def _run(self) -> dict[str, Any]:
+        self.store.stop_agents()          # live status shows only this run's agents, not leftovers of an interrupted one
         before = {t["id"]: t["status"] for t in self.store.list_tickets()}
         halted = None
         try:

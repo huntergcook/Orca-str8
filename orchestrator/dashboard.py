@@ -153,7 +153,8 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
         return {"needs_human": needs_human, "handling": handling, "code_pending": code_pending, "org": org, "by_status": by_status, "board": board,
                 "resources": resources, "jobs": jobs, "spend": spend, "events": events, "agents": agents,
                 "usage_by_department": usage_by_dept, "integration": integration,
-                "unavailable_models": list(unavailable.values())}
+                "unavailable_models": list(unavailable.values()),
+                "departments": list((cfg.get("departments") or {}).keys())}
     finally:
         c.close()
 

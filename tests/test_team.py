@@ -534,3 +534,11 @@ def test_a_model_past_its_cost_cap_is_skipped_and_the_fallback_takes_over(store,
         assert {e["payload"]["model"] for e in store.events(tid) if e["type"] == "usage"} == {"flash"}
     finally:
         providers.UNAVAILABLE.clear()
+
+
+def test_a_new_run_marks_the_previous_runs_agents_stopped(store):
+    store.set_agent("w1@t", "worker:a-1", "worker", "research", None, "thinking", "", "m")
+    store.set_agent("w2@t", "worker:a-2", "worker", "research", None, "done", "", "m")
+    assert store.stop_agents() == 1
+    states = {a["agent_id"]: a["state"] for a in store.list_agents()}
+    assert states == {"w1@t": "stopped", "w2@t": "done"}

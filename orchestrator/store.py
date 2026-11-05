@@ -213,6 +213,13 @@ class Store:
 
     # ------------------------------------------------------------ agents and usage
 
+    def stop_agents(self) -> int:
+        """Mark every agent that is not in a final state as 'stopped' (a new run starts; whatever the last run's agents
+        were doing ended with it). Returns how many rows changed."""
+        with self._tx() as c:
+            return c.execute("UPDATE agents SET state='stopped', detail='ended with an earlier run'"
+                             " WHERE state NOT IN ('done', 'failed', 'escalated', 'cancelled', 'stopped')").rowcount
+
     def set_agent(self, agent_id: str, name: str, kind: str, department: str | None, ticket_id: str | None,
                   state: str, detail: str = "", model: str | None = None) -> None:
         """Record what an agent is doing right now. `since` only moves when the state changes."""

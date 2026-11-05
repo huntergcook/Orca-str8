@@ -6,64 +6,128 @@
 <meta name="dash-token" content="__DASH_TOKEN__">
 <title>Orchestrator</title>
 <style>
-  :root { --bg:#fff; --fg:#1b1f24; --mut:#667085; --line:#e4e7ec; --card:#f8f9fb; --warn:#b42318; --warnbg:#fef3f2; --ok:#067647; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#14171c; --fg:#e6e8eb; --mut:#98a2b3; --line:#2a2f37; --card:#1b1f26; --warn:#fda29b; --warnbg:#3a1a18; --ok:#6ce9a6; } }
-  * { box-sizing: border-box; }
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#14171c; --mut:#6b7280; --line:#e5e7eb; --accent:#2563eb;
+          --warn:#b42318; --warnbg:#fef3f2; --ok:#067647; --chip:#eef2ff; --chipfg:#3730a3; --idle:#9ca3af; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --card:#171a20; --fg:#e6e8eb; --mut:#9aa3b2; --line:#2a2f37;
+          --accent:#60a5fa; --warn:#fda29b; --warnbg:#3a1a18; --ok:#6ce9a6; --chip:#1e2540; --chipfg:#a5b4fc; --idle:#4b5563; } }
+  * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, sans-serif; }
-  main { max-width:1100px; margin:0 auto; padding:16px; display:grid; gap:14px; }
-  h1 { font-size:16px; margin:0; } h2 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin:0 0 8px; }
-  section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; }
+  main { max-width:1200px; margin:0 auto; padding:16px; display:grid; gap:14px; }
+  header { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 18px; }
+  h1 { font-size:18px; margin:0; }
+  .stat { color:var(--mut); } .stat b { color:var(--fg); font-weight:600; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--idle); margin-right:6px; vertical-align:middle; }
+  .dot.on { background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+  .depts { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; }
+  .dept { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:8px; }
+  .dept.idle { opacity:.6; }
+  .dname { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--mut); font-weight:600; }
+  .big { font-size:40px; font-weight:700; line-height:1; } .big small { font-size:13px; font-weight:500; color:var(--mut); margin-left:6px; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; }
+  .chip { background:var(--chip); color:var(--chipfg); border-radius:999px; padding:2px 9px; font-size:12px; white-space:nowrap; }
+  .chip.mgr { background:transparent; border:1px solid var(--line); color:var(--mut); }
+  .who { font-size:12px; color:var(--mut); display:grid; gap:2px; }
+  .who span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; }
   .need { background:var(--warnbg); border-color:var(--warn); } .need h2 { color:var(--warn); }
-  table { width:100%; border-collapse:collapse; } td,th { text-align:left; padding:3px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { color:var(--mut); font-weight:500; } .mut { color:var(--mut); } code { font-size:12px; }
-  .pill { display:inline-block; padding:0 7px; border-radius:9px; border:1px solid var(--line); font-size:12px; margin-right:4px; }
-  .done { color:var(--ok); } .escalated,.failed { color:var(--warn); }
-  details { margin:2px 0; } ul { margin:4px 0 4px 18px; padding:0; }
-  .scroll { max-height:320px; overflow:auto; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin:0 0 8px; }
   .item { padding:8px 0; border-top:1px solid var(--line); } .item:first-child { border-top:0; }
   .why { margin:4px 0; white-space:pre-wrap; }
   textarea { width:100%; font:inherit; padding:6px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; }
   button { font:inherit; padding:4px 12px; border-radius:6px; border:1px solid var(--warn); background:var(--warn); color:#fff; cursor:pointer; }
   button.sec { background:transparent; color:var(--warn); } button:disabled { opacity:.5; cursor:default; }
   .btns { margin-top:6px; display:flex; gap:8px; align-items:center; }
-  .st { display:inline-block; min-width:74px; text-align:center; padding:0 6px; border-radius:9px; font-size:12px; border:1px solid var(--line); }
-  .st.thinking { background:#dbeafe; color:#1e40af; } .st.tool { background:#ede9fe; color:#5b21b6; }
-  .st.waiting { background:#f1f5f9; color:#475569; } .st.reviewing, .st.integrating, .st.verifying, .st.checking { background:#fef3c7; color:#92400e; }
-  .st.done { background:#dcfce7; color:#166534; } .st.cancelled { background:#f1f5f9; color:#64748b; } .st.escalated, .st.failed { background:#fee2e2; color:#991b1b; }
-  .st.asking, .st.needs_clarification { background:#ffedd5; color:#9a3412; } .st.starting { background:#e0f2fe; color:#075985; }
-  .st.stale { opacity:.45; }
-  .dept { margin:6px 0 2px; font-weight:600; } .agent td { padding:2px 6px; }
+  .pill { display:inline-block; padding:0 7px; border-radius:9px; border:1px solid var(--line); font-size:12px; margin-right:4px; }
+  details > summary { cursor:pointer; color:var(--mut); }
+  table { width:100%; border-collapse:collapse; } td,th { text-align:left; padding:3px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mut); font-weight:500; } .mut { color:var(--mut); } code { font-size:12px; }
+  .scroll { max-height:320px; overflow:auto; } .done { color:var(--ok); } .escalated,.failed { color:var(--warn); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; margin-top:10px; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Orchestrator <span id="stamp" class="mut"></span></h1>
+  <header>
+    <h1>Orchestrator</h1>
+    <span class="stat"><span class="dot" id="run-dot"></span><b id="run-txt">-</b></span>
+    <span class="stat" id="work-txt"></span>
+    <span class="stat" id="money-txt"></span>
+    <span class="stat mut" id="stamp"></span>
+  </header>
+
   <section id="resume-sec" hidden><b>No run is active, but <span id="un-n"></span> ticket(s) are unfinished</b>
-    <span class="mut">(typical after a restart, crash or power cut)</span>
     <div class="btns"><button id="resume-btn">Resume run</button><span class="msg" id="resume-msg"></span></div></section>
-  <section class="need" id="need-sec" hidden><h2>Needs human</h2><div id="need"></div></section>
-  <section id="code-sec" hidden><h2>Code awaiting review <span class="mut" id="code-n"></span></h2><div id="code-list"></div>
-    <div class="mut">Review with <code>ctl code show ID</code>, then <code>ctl code accept ID</code> or <code>ctl code reject ID "feedback"</code>.</div></section>
-  <section id="handling-sec" hidden><details><summary><b>Being handled below you</b> <span class="mut" id="hn"></span></summary><div id="handling"></div></details></section>
-  <div class="grid">
-    <section style="grid-column: 1 / -1"><h2>Team <span class="mut" id="team-sum"></span></h2><div id="team"></div></section>
-    <section><h2>Hardware</h2><div id="hw"></div></section>
-    <section><h2>Spend</h2><div id="spend"></div></section>
-  </div>
-  <section><h2>Tickets</h2><div id="counts"></div><div class="scroll" id="board"></div></section>
-  <section><h2>Event feed</h2><div class="scroll" id="events"></div></section>
+  <section class="need" id="need-sec" hidden><h2>Needs you</h2><div id="need"></div></section>
+
+  <div class="depts" id="depts"></div>
+
+  <section>
+    <details id="more"><summary>Details: tickets, items being handled, hardware, spend, events</summary>
+      <div class="grid">
+        <div><h2>Being handled below you <span class="mut" id="hn"></span></h2><div id="handling" class="scroll"></div></div>
+        <div><h2>Hardware</h2><div id="hw"></div></div>
+        <div><h2>Spend</h2><div id="spend"></div></div>
+        <div><h2>Code awaiting review</h2><div id="code-list"></div></div>
+      </div>
+      <h2 style="margin-top:12px">Tickets</h2><div id="counts"></div><div class="scroll" id="board"></div>
+      <h2 style="margin-top:12px">Event feed</h2><div class="scroll" id="events"></div>
+    </details>
+  </section>
 </main>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const rows = (a, f) => a.map(f).join("");
-function workerSummary(ws) {
-  if (!ws.length) return "no workers";
-  const c = {}; ws.forEach(w => c[w.status] = (c[w.status] || 0) + 1);
-  return ws.length + " worker" + (ws.length > 1 ? "s" : "") + " (" + Object.entries(c).map(([k, v]) => v + " " + k).join(", ") + ")";
-}
+const fmt = n => (n || 0).toLocaleString();
 const TOKEN = document.querySelector('meta[name="dash-token"]').content;
+// States in which an agent is actually doing work (a manager "waiting" on its workers is not).
+const WORKING = new Set(["thinking", "tool", "checking", "reviewing", "integrating", "verifying", "starting", "asking"]);
+const shortModel = m => String(m || "?").replace(/^claude-cli:/, "cli:").replace(/^claude-/, "").replace(/^deepseek-/, "ds-");
+function ago(ts) {
+  const sec = Math.max(0, (Date.now() - Date.parse(ts)) / 1000);
+  return sec < 60 ? Math.round(sec) + "s" : sec < 3600 ? Math.round(sec / 60) + "m" : (sec / 3600).toFixed(1) + "h";
+}
+
+function renderDepts(s) {
+  const live = s.run_active;
+  const names = new Set(s.departments || []);
+  s.agents.forEach(a => a.department && names.add(a.department));
+  let total = 0;
+  const cards = [...names].sort().map(d => {
+    const mine = s.agents.filter(a => a.department === d);
+    const working = live ? mine.filter(a => a.kind !== "manager" && WORKING.has(a.state)) : [];
+    const managers = live ? mine.filter(a => a.kind === "manager" && (WORKING.has(a.state) || a.state === "waiting")) : [];
+    total += working.length;
+    const byModel = {};
+    working.forEach(a => byModel[a.model] = (byModel[a.model] || 0) + 1);
+    const chips = Object.entries(byModel).sort((x, y) => y[1] - x[1])
+      .map(([m, n]) => `<span class="chip" title="${esc(m)}">${esc(shortModel(m))} × ${n}</span>`).join("");
+    const mgr = managers.map(a => `<span class="chip mgr" title="${esc(a.model)}">manager ${esc(a.state)} · ${esc(shortModel(a.model))}</span>`).join("");
+    const who = working.slice(0, 4).map(a => `<span title="${esc(a.detail)}">${esc(String(a.name).replace(/^worker:/, "").replace(/^verifier /, ""))}: ${esc(a.state)} · ${esc((a.ticket_title || "").slice(0, 50))}</span>`).join("")
+      + (working.length > 4 ? `<span>+${working.length - 4} more</span>` : "");
+    return `<div class="dept${working.length || managers.length ? "" : " idle"}">
+      <div class="dname">${esc(d)}</div>
+      <div class="big">${working.length}<small>working</small></div>
+      <div class="chips">${chips || '<span class="mut">no workers active</span>'}</div>
+      ${mgr ? `<div class="chips">${mgr}</div>` : ""}
+      ${who ? `<div class="who">${who}</div>` : ""}
+    </div>`;
+  });
+  $("depts").innerHTML = cards.join("") || '<div class="mut">no departments configured</div>';
+  $("work-txt").innerHTML = `<b>${total}</b> working`;
+}
+
+function renderHeader(s) {
+  $("run-dot").className = "dot" + (s.run_active ? " on" : "");
+  $("run-txt").textContent = s.run_active ? "run active" : "no run";
+  const sp = s.spend || {};
+  const bal = Object.entries(sp.balances || {}).filter(([, b]) => b.usd !== undefined)
+    .map(([p, b]) => `${esc(p)} <b>$${Number(b.usd).toFixed(2)}</b>`).join(" · ");
+  const est = sp.estimated_usd != null ? `est. spend <b>$${Number(sp.estimated_usd).toFixed(2)}</b>` : "";
+  $("money-txt").innerHTML = [bal, est].filter(Boolean).join(" · ");
+  $("stamp").textContent = "updated " + new Date().toLocaleTimeString();
+}
+
 let needSig = "";
 function renderNeed(items) {
   $("need-sec").hidden = !items.length;
@@ -76,9 +140,9 @@ function renderNeed(items) {
   $("need").innerHTML = rows(items, n => {
     const q = n.status === "needs_clarification", prop = n.kind === "proposal";
     return `<div class="item" data-id="${esc(n.id)}"><div><b>${esc(n.title)}</b> <code>${esc(n.id)}</code> ` +
-      `<span class="pill">${esc(n.status)}</span> <span class="mut">${esc(n.level)} · ${esc(String(n.assignee).replace(/^worker:/, ""))}</span></div>` +
+      `<span class="pill">${esc(prop ? "proposal" : n.status)}</span></div>` +
       `<div class="why">${esc(q ? n.detail : n.why) || "(no reason recorded)"}</div>` +
-      `<textarea data-id="${esc(n.id)}" rows="2" placeholder="${q ? "Your answer" : "Guidance for the retry (optional)"}">${esc(typed[n.id] || "")}</textarea>` +
+      `<textarea data-id="${esc(n.id)}" rows="2" placeholder="${q ? "Your answer" : "Guidance (optional)"}">${esc(typed[n.id] || "")}</textarea>` +
       `<div class="btns">${q ? '<button data-act="answer">Answer</button>' : prop ? '<button data-act="retry">Approve</button>' : '<button data-act="retry">Retry</button>'}` +
       `<button data-act="cancel" class="sec">${prop ? "Decline" : "Cancel ticket"}</button><span class="msg"></span></div></div>`;
   });
@@ -108,71 +172,43 @@ $("resume-btn").addEventListener("click", async () => {
   } catch (err) { m.textContent = "failed: " + err; }
   b.disabled = false; tick();
 });
-function ago(ts) {
-  const sec = Math.max(0, (Date.now() - Date.parse(ts)) / 1000);
-  return sec < 60 ? Math.round(sec) + "s" : sec < 3600 ? Math.round(sec / 60) + "m" : (sec / 3600).toFixed(1) + "h";
+
+function renderDetails(s) {
+  if (!$("more").open) return;                        // nothing to draw while collapsed
+  $("hn").textContent = "(" + s.handling.length + ")";
+  $("handling").innerHTML = rows(s.handling, n => `<div class="item"><b>${esc(n.title)}</b> <code>${esc(n.id)}</code> ` +
+    `<span class="pill">${esc(n.kind === "proposal" ? "proposal" : n.status)}</span><div class="mut">${esc(n.why || n.detail)}</div></div>`) || '<span class="mut">nothing</span>';
+  $("hw").innerHTML = (s.resources.length ? `<table><tr><th>resource</th><th>state</th><th>holder</th></tr>` +
+    rows(s.resources, r => `<tr><td>${esc(r.name)}</td><td>${esc(r.state)}</td><td>${esc(r.holder_ticket ?? "")}</td></tr>`) + `</table>` : '<span class="mut">no resources</span>') +
+    (s.jobs.length ? `<table style="margin-top:8px"><tr><th>job</th><th>state</th><th>resource</th></tr>` +
+    rows(s.jobs.slice(0, 6), j => `<tr><td>${esc(j.name)}</td><td class="${j.state === "exited" && j.exit_code ? "failed" : ""}">${esc(j.state)}${j.exit_code ? " (" + esc(j.exit_code) + ")" : ""}</td><td>${esc(j.resource ?? "")}</td></tr>`) + `</table>` : "");
+  const sp = s.spend, ud = Object.entries(s.usage_by_department || {});
+  $("spend").innerHTML = (ud.length ? `<table><tr><th>department</th><th>calls</th><th>input</th><th>cached</th><th>output</th></tr>` +
+    rows(ud, ([d, u]) => `<tr><td>${esc(d)}</td><td>${fmt(u.calls)}</td><td>${fmt(u.input_tokens)}</td><td class="mut">${fmt(u.cache_hit_tokens)}</td><td>${fmt(u.output_tokens)}</td></tr>`) + `</table>` : "") +
+    ((s.unavailable_models || []).length ? `<div class="mut" style="margin-top:6px">skipped (quota): ${esc(s.unavailable_models.map(m => m.model).join(", "))}</div>` : "") +
+    (sp.max_cost_usd ? `<div class="mut">estimate cap $${esc(sp.max_cost_usd)}</div>` : "");
+  $("code-list").innerHTML = rows(s.code_pending, c => `<div class="item"><b>${esc(c.title)}</b> <code>${esc(c.id)}</code><div class="mut">${esc(c.files.join(", "))}</div></div>`) || '<span class="mut">nothing</span>';
+  $("counts").innerHTML = rows(Object.entries(s.by_status), ([k, v]) => `<span class="pill ${esc(k)}">${esc(k)} ${v}</span>`);
+  const mdl = m => Object.entries(m || {}).map(([k, v]) => k + ": " + v).join(", ");
+  const open = s.board.filter(t => !["done", "cancelled", "failed"].includes(t.status) || !t.parent_id);
+  $("board").innerHTML = `<table><tr><th>id</th><th>title</th><th>status</th><th>assignee</th><th>models</th></tr>` +
+    rows(open.slice().reverse(), t => `<tr><td><code>${esc(t.id)}</code></td><td>${esc(t.title)}</td><td class="${esc(t.status)}">${esc(t.status)}</td><td>${esc(String(t.assignee).replace(/^worker:/, ""))}</td><td class="mut">${esc(mdl(t.models))}</td></tr>`) + `</table>`;
+  $("events").innerHTML = `<table>` + rows(s.events.slice(0, 60), e =>
+    `<tr><td class="mut">${esc(e.ts.slice(11, 19))}</td><td>${esc(e.actor)}</td><td>${esc(e.type)}</td><td class="mut">${esc(e.ticket_id ?? "")} ${esc(JSON.stringify(e.payload).slice(0, 160))}</td></tr>`) + `</table>`;
 }
-const fmt = n => (n || 0).toLocaleString();
-function renderTeam(s) {
-  const finished = new Set(["done", "failed", "escalated"]);
-  const depts = {};
-  s.agents.forEach(a => (depts[a.department || "?"] = depts[a.department || "?"] || []).push(a));
-  const active = s.agents.filter(a => !finished.has(a.state)).length;
-  $("team-sum").textContent = active + " active, " + (s.agents.length - active) + " finished" + (s.run_active ? "" : " (no run active)");
-  $("team").innerHTML = Object.keys(depts).length ? rows(Object.entries(depts), ([d, list]) => {
-    const u = s.usage_by_department[d] || {};
-    return `<div class="dept">${esc(d)} <span class="mut">${list.filter(a => !finished.has(a.state)).length} active · ` +
-      `${fmt(u.input_tokens)} in / ${fmt(u.output_tokens)} out tokens · ${fmt(u.calls)} calls</span></div><table>` +
-      rows(list, a => `<tr class="agent"><td>${a.kind === "manager" ? "<b>" + esc(a.name) + "</b>" : esc(String(a.name).replace(/^worker:/, ""))}</td>` +
-        `<td><span class="st ${esc(a.state)}${!s.run_active && !finished.has(a.state) ? " stale" : ""}">${esc(a.state)}</span> <span class="mut">${ago(a.since)}</span></td>` +
-        `<td class="mut">${esc(a.detail)}</td><td>${esc((a.ticket_title || "").slice(0, 60))}</td>` +
-        `<td class="mut">${fmt(a.calls)} calls · ${fmt(a.tokens_in + a.tokens_out)} tok</td></tr>`) + `</table>`;
-  }) : '<span class="mut">nobody has started yet</span>';
-}
+
 function render(s) {
+  renderHeader(s);
   $("resume-sec").hidden = !s.unfinished.length;
   $("un-n").textContent = s.unfinished.length;
   renderNeed(s.needs_human);
-  $("code-sec").hidden = !s.code_pending.length;
-  $("code-n").textContent = "(" + s.code_pending.length + ")";
-  $("code-list").innerHTML = rows(s.code_pending, c => `<div class="item"><b>${esc(c.title)}</b> <code>${esc(c.id)}</code> ` +
-    `<span class="mut">${c.files.length} file(s): ${esc(c.files.join(", "))}</span><div class="mut">${esc(c.summary)}</div></div>`);
-  $("handling-sec").hidden = !s.handling.length;
-  $("hn").textContent = s.handling.length + " item" + (s.handling.length === 1 ? "" : "s") + " your managers are working on";
-  $("handling").innerHTML = rows(s.handling, n => `<div class="item"><b>${esc(n.title)}</b> <code>${esc(n.id)}</code> ` +
-    `<span class="pill">${esc(n.kind === "proposal" ? "proposal" : n.status)}</span> <span class="mut">with ${n.route === "manager" ? "its department manager" : "the top manager"}</span>` +
-    `<div class="mut">${esc(n.why || n.detail)}</div></div>`);
-  renderTeam(s);
-  $("hw").innerHTML = (s.resources.length ? `<table><tr><th>resource</th><th>state</th><th>holder</th><th>safe to stop</th></tr>` +
-    rows(s.resources, r => `<tr><td>${esc(r.name)}</td><td>${esc(r.state)}</td><td>${esc(r.holder_ticket ?? "")}</td><td class="mut">${esc(r.safe_to_stop)}</td></tr>`) + `</table>` : '<span class="mut">no resources registered</span>') +
-    (s.jobs.length ? `<table style="margin-top:8px"><tr><th>job</th><th>name</th><th>state</th><th>resource</th></tr>` +
-    rows(s.jobs, j => `<tr><td><code>${esc(j.id)}</code></td><td>${esc(j.name)}</td><td class="${j.state === "exited" && j.exit_code ? "failed" : ""}">${esc(j.state)}${j.exit_code ? " (" + esc(j.exit_code) + ")" : ""}</td><td>${esc(j.resource ?? "")}</td></tr>`) + `</table>` : "");
-  const sp = s.spend, tot = sp.input_tokens + sp.output_tokens;
-  const ud = Object.entries(s.usage_by_department || {});
-  const deptTable = ud.length ? `<table style="margin-top:6px"><tr><th>department</th><th>calls</th><th>input</th><th>cached</th><th>output</th></tr>` +
-    rows(ud, ([d, u]) => `<tr><td>${esc(d)}</td><td>${fmt(u.calls)}</td><td>${fmt(u.input_tokens)}</td><td class="mut">${fmt(u.cache_hit_tokens)}</td><td>${fmt(u.output_tokens)}</td></tr>`) + `</table>` : "";
-  const integ = s.integration && s.integration.exists ? `<div class="mut" style="margin-top:6px">integration branch <code>${esc(s.integration.branch)}</code>: ` +
-    `${s.integration.ahead} commit(s) ahead of ${esc(s.integration.base)}</div>` : "";
-  const bal = Object.entries(sp.balances || {}).map(([p, b]) => b.usd !== undefined
-    ? `<b>${esc(p)}</b> balance $${Number(b.usd).toFixed(2)}${sp.stop_below_balance_usd != null && b.usd < sp.stop_below_balance_usd ? ' <span class="failed">below floor</span>' : ""}`
-    : `<span class="mut">${esc(p)} balance unavailable (${esc(b.error || "?")})</span>`).join(" · ");
-  const money = `<div>${bal || '<span class="mut">no provider reports a balance</span>'}` +
-    `${sp.stop_below_balance_usd != null ? ' <span class="mut">(runs stop below $' + Number(sp.stop_below_balance_usd).toFixed(2) + ")</span>" : ""}</div>` +
-    `<div class="mut">estimated spend ${sp.estimated_usd != null ? "$" + Number(sp.estimated_usd).toFixed(2) : "unknown (no prices)"}${sp.max_cost_usd ? " of $" + sp.max_cost_usd + " cap" : ""}</div>`;
-  const skipped = (s.unavailable_models || []).length ? `<div style="margin-top:6px"><b>Models skipped</b> (quota or limit) ` +
-    rows(s.unavailable_models, m => `<div class="mut"><code>${esc(m.model)}</code> ${ago(m.ts)} ago: ${esc(String(m.why).slice(0, 140))}</div>`) + `</div>` : "";
-  $("spend").innerHTML = money + skipped + deptTable + integ + `<div>${tot.toLocaleString()} tokens <span class="mut">(${sp.input_tokens.toLocaleString()} in / ${sp.output_tokens.toLocaleString()} out)</span></div>` +
-    `<div class="mut">budget: ${sp.max_tokens ? tot.toLocaleString() + " / " + sp.max_tokens.toLocaleString() + " tokens" : "none"}${sp.max_cost_usd ? ", $" + sp.max_cost_usd + " cap" : ""}</div>`;
-  $("counts").innerHTML = rows(Object.entries(s.by_status), ([k, v]) => `<span class="pill ${esc(k)}">${esc(k)} ${v}</span>`) || '<span class="mut">no tickets</span>';
-  const mdl = m => Object.entries(m || {}).map(([k, v]) => k + ": " + v).join(", ");
-  $("board").innerHTML = s.board.length ? `<table><tr><th>id</th><th>title</th><th>status</th><th>assignee</th><th>rigor</th><th>models</th><th>trace</th></tr>` +
-    rows(s.board, t => `<tr><td><code>${esc(t.id)}</code></td><td>${esc(t.title)}</td><td class="${esc(t.status)}">${esc(t.status)}</td><td>${esc(t.assignee)}</td><td class="mut">${esc(t.rigor)}</td><td class="mut">${esc(mdl(t.models))}</td><td class="mut">${esc(t.trace.join(" > "))}</td></tr>`) + `</table>` : "";
-  $("events").innerHTML = `<table>` + rows(s.events, e =>
-    `<tr><td class="mut">${esc(e.ts.slice(11, 19))}</td><td>${esc(e.actor)}</td><td>${esc(e.type)}</td><td class="mut">${esc(e.ticket_id ?? "")} ${esc(JSON.stringify(e.payload))}</td></tr>`) + `</table>`;
-  $("stamp").textContent = "updated " + new Date().toLocaleTimeString() + (s.run_active ? " · run active" : " · no run active");
+  renderDepts(s);
+  renderDetails(s);
 }
+let last = null;
+$("more").addEventListener("toggle", () => last && renderDetails(last));
 async function tick() {
-  try { render(await (await fetch("/api/state")).json()); }
+  try { last = await (await fetch("/api/state")).json(); render(last); }
   catch (e) { $("stamp").textContent = "disconnected"; }
 }
 tick(); setInterval(tick, 2000);
