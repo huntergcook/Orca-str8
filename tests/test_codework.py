@@ -3,6 +3,7 @@ import re
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -556,6 +557,13 @@ def test_director_review_accept_integration_and_release(repo_dir, tmp_path):
     assert rel["into"] == "main" and "a + b" in (repo_dir / "src" / "calc.py").read_text()
     with pytest.raises(Exception, match="not awaiting code review"):
         ctl.code_accept(tid)
+    ctl.close()
+
+
+def test_workers_can_read_the_code_repo_so_verifiers_see_released_code(repo_dir, tmp_path):
+    ctl = make_ctl(repo_dir, tmp_path, Team())
+    m = ctl.director.managers["software"]
+    assert str(repo_dir.resolve()) in [str(Path(r).resolve()) for r in m._read_roots()]
     ctl.close()
 
 

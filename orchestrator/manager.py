@@ -121,11 +121,19 @@ class Manager:
     def review_by_manager(self) -> bool:
         return self.writes_code and (self.cfg.get("code") or {}).get("review", "manager") == "manager"
 
+    def _read_roots(self) -> list[str]:
+        """Folders any worker may read: the configured ones plus the code repository, so verifiers can inspect the
+        released code (read-only; secrets stay blocked)."""
+        roots = [str(r) for r in (self.cfg.get("read_roots") or [])]
+        if self.code_repo is not None and str(self.code_repo.repo) not in roots:
+            roots.append(str(self.code_repo.repo))
+        return roots
+
     # ----------------------------------------------------------------- deciding
     def _toolbox(self, ticket_id: str | None) -> ManagerToolBox:
         return ManagerToolBox(
             self.workspace, self.name, store=self.store, ticket_id=ticket_id,
-            read_roots=self.cfg.get("read_roots") or [], departments=self.departments,
+            read_roots=self._read_roots(), departments=self.departments,
                           approve_requests=bool(self.cfg["policies"].get("approve_cross_department_work")),
             can_acquire=self.can_acquire_tools, can_use_hardware=self.can_use_hardware, jobs=self.jobs,
             code_repo=self.code_repo if self.writes_code else None, code_cfg=self.cfg.get("code") or {},
@@ -261,7 +269,7 @@ class Manager:
                 return
             box = ToolBox(self.workspace, actor=c["assignee"], can_acquire=self.can_acquire_tools,
                           store=self.store, ticket_id=c["id"], can_use_hardware=self.can_use_hardware,
-                          jobs=self.jobs, read_roots=self.cfg.get("read_roots") or [], departments=self.departments,
+                          jobs=self.jobs, read_roots=self._read_roots(), departments=self.departments,
                           approve_requests=bool(self.cfg["policies"].get("approve_cross_department_work")))
             run_ticket(self.store, self.provider, c["id"], c["assignee"], self._with_rules(load_role(c["worker_role"])),
                        models, self.cfg["policies"]["capability_retry_limit"], toolbox=box, department=self.department,
