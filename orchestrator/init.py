@@ -181,8 +181,12 @@ def main() -> int:
     if not (Path(a.target) / ".git").exists():
         print("\nnote: this folder is not a git repository. Code tickets (the Software department) need one: "
               "run `git init` and make a first commit in it, or set code.repo in config/orchestrator.yaml.")
-    print(f"\nNext: add DEEPSEEK_API_KEY to {Path(a.target) / '.env'} (copy .env.example), then run "
-          "`python -m orchestrator.smoke` from that folder.")
+    if a.use_cli:
+        print("\nNext: fill in config/mission.yaml (`python -m orchestrator.ctl intake`), run `python -m orchestrator.smoke` from "
+              "that folder, then `python -m orchestrator.daemon --project . start`. No API key is needed for the CLI.")
+    else:
+        print(f"\nNext: add DEEPSEEK_API_KEY to {Path(a.target) / '.env'} (copy .env.example), then run "
+              "`python -m orchestrator.smoke` from that folder.")
     return 0
 
 
