@@ -13,7 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
-from . import actions
+from . import actions, learnings
 from .agent import as_result, as_tool_call, compact, parse_reply, run_ticket, ticket_prompt
 from .codework import (CodeError, CodeSpec, CodeToolBox, branch_state, code_repo_from_cfg, format_gate_failures,
                        glob_match, rework_spec, run_gates)
@@ -36,7 +36,7 @@ Reply with exactly one JSON object:
        "acceptance_criteria": ["..."], "return_spec": {"format": "...", "description": "..."},
        "rigor": "quick_and_dirty|balanced|rigorous",
        "code": {"allowed_paths": ["..."], "acceptance": ["..."], "context_files": ["..."]}}]}   # "code": only for tickets that change code
-  {"action": "done", "notes": "...", "result": {...},       # result shaped as your ticket's return_spec
+  {"action": "done", "notes": "...", "result": {...},       # result shaped as your ticket's return_spec; add "dead_ends": [...] (what failed and why) and "learned": [...] so nobody repeats it; experiments add "outcome": "confirmed|refuted|inconclusive"
    "override_reason": "..."}                                # only if finishing despite verification concerns
   {"action": "answer", "answer": "..."}                    # only when answering a worker's question
   {"action": "ask", "question": "..."}                     # you need clarification from above
@@ -139,7 +139,8 @@ class Manager:
         rules_section = (f"# Project rules (mandatory; apply them to every worker ticket you write)\n{rules}\n\n"
                          if rules else "")
         box = self._toolbox(ticket_id)
-        system = (f"{self.role_text}\n\n{rules_section}# Your memory\n{self.memory.resume_brief()}\n\n"
+        lessons = learnings.section(self.workspace) if hasattr(self, "workspace") else ""
+        system = (f"{self.role_text}\n\n{rules_section}{lessons}# Your memory\n{self.memory.resume_brief()}\n\n"
                   f"{hw_section}{MANAGER_PROTOCOL}\n\n{box.describe()}")
         pol = self.cfg["policies"]
         limit, max_tools = pol["capability_retry_limit"], int(pol.get("max_manager_tool_steps", 25))
@@ -437,6 +438,12 @@ class Manager:
         if a == "done":
             self._close_children(ticket_id)
             self.store.transition(ticket_id, "done", self.name, result=as_result(d.get("result")))
+            try:
+                tk = self.store.get_ticket(ticket_id)
+                if hasattr(self, "workspace"):
+                    learnings.record(self.workspace, ticket_id, tk["title"], tk.get("result"), tk.get("experiment"))
+            except Exception:
+                pass
         elif a == "fail":
             self._close_children(ticket_id)
             self.store.transition(ticket_id, "failed", self.name, note=str(d.get("reason", "")))

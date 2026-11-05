@@ -12,7 +12,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
-from . import actions
+from . import actions, critical_path, drift, learnings, mission, trace
 from .agent import parse_reply
 from .config import model_chain, project_rules
 from .manager import ROLES_DIR, Manager, load_role
@@ -30,7 +30,9 @@ Reply with exactly one JSON object:
    "actions": [
      {"type": "create_ticket", "department": "<dept>", "title": "...", "context": "...",
       "acceptance_criteria": ["..."], "return_spec": {"format": "...", "description": "..."},
-      "rigor": "quick_and_dirty|balanced|rigorous", "worker_role": "<role the dept manager should use>"},
+      "rigor": "quick_and_dirty|balanced|rigorous", "worker_role": "<role the dept manager should use>",
+      "depends_on": ["<ticket ids that must be done first; omit unless truly required, independent work runs in parallel>"],
+      "experiment": {"hypothesis": "...", "budget": "<time/cost cap>"}},   # experiment: only for trial-and-error work; the result carries outcome confirmed|refuted|inconclusive
      {"type": "set_state", "text": "<rewrite your state notes: goal, stopping criteria, rigor profile, constraints>"},
      {"type": "log", "text": "<durable note about a human decision or instruction>"},
      {"type": "answer_ticket", "ticket_id": "...", "text": "<answer to a question a manager is blocked on>"},
@@ -54,6 +56,12 @@ class Director:
         if legacy.is_dir() and not new.exists():          # projects from before the rename: keep the director's notes
             legacy.rename(new)
         self.memory = Memory(workspace, "director")
+        self._dep_flagged: set[str] = set()
+        self._oversight_at, self._drift_at = 0.0, time.monotonic()
+        self._serial: dict[str, float] = {}
+        self._serial_flagged: set[str] = set()
+        if getattr(self.store, "tracer", None) is None:
+            self.store.tracer = trace.Tracer(cfg, workspace)
         self.log_path = human_log(workspace)
         self.models = model_chain(cfg, "director")
         self.finished = False
@@ -177,7 +185,8 @@ class Director:
         return (f"{load_role('director')}\n\n{rules_section}# Departments\n{', '.join(self.managers) or '(none configured)'}\n\n"
                 f"# Your state notes\n{self.memory.read_state() or '(none yet)'}\n\n"
                 f"# Recent conversation with the human\n{self._tail_log()}\n\n"
-                f"# Ticket board\n{self.board()}\n\n{TOP_PROTOCOL}")
+                f"{learnings.section(self.workspace)}{self._drift_note()}"
+                f"# Ticket board\n{self.board()}\n\n{critical_path.analyze(self.store, int(self.cfg['policies'].get('max_parallel_tickets', 8)))['message']}\n\n{TOP_PROTOCOL}")
 
     def _ask(self, user_text: str, speaker: str) -> str:
         """One director decision: build the context from files (never from a transcript), call the model chain, apply
@@ -229,11 +238,94 @@ class Director:
             self.store.add_event(None, "director", "bad_action", {"unknown_department": dept})
             return None
         fields = {k: a[k] for k in ("title", "context", "acceptance_criteria", "return_spec", "rigor",
-                                    "worker_role", "workspace_refs", "worker_tickets", "code") if k in a}
+                                    "worker_role", "workspace_refs", "worker_tickets", "code", "experiment") if k in a}
+        deps = [str(d) for d in (a.get("depends_on") or []) if str(d).strip()]
+        for d in deps:
+            self.store.get_ticket(d)                      # unknown id -> bad_action, not a silent never-runnable ticket
+        if deps:
+            fields["depends_on"] = deps
         fields.setdefault("worker_role", "worker")
         fields["assignee"] = self.managers[dept].name
         fields["cc"] = ["director"]
         return self.store.create_ticket(fields, actor="director")["id"]
+
+    def oversight(self) -> None:
+        """Periodic, cheap checks that keep the run honest: serial-bottleneck warning, charter change, drift review."""
+        now = time.monotonic()
+        if now - self._oversight_at < 60:
+            return
+        self._oversight_at = now
+        pol = self.cfg["policies"]
+        try:
+            ana = critical_path.analyze(self.store, int(pol.get("max_parallel_tickets", 8)))
+            mins = float(pol.get("serial_minutes", 20))
+            if ana["serial"]:
+                since = self._serial.setdefault(ana["signature"], now)
+                if mins and now - since >= 60 * mins and ana["signature"] not in self._serial_flagged:
+                    self._serial_flagged.add(ana["signature"])
+                    self.store.add_event(None, "director", "serial_bottleneck", {"message": ana["message"]})
+                    self.memory.append_journal("SERIAL BOTTLENECK: " + ana["message"])
+                    if self.notify:
+                        self.notify("info", "Work is running one step at a time", ana["message"])
+            else:
+                self._serial.clear()
+            h = mission.charter_hash(self.cfg)
+            hp = self.workspace / "charter.hash"
+            old = hp.read_text().strip() if hp.is_file() else None
+            if old != h and mission.render_charter(self.cfg):
+                atomic_write(hp, h)
+                if old:
+                    self.store.add_event(None, "director", "charter_changed", {"hash": h})
+                    self.memory.append_journal("CHARTER CHANGED by the human: re-read the mission brief and re-plan against it.")
+            every = float(pol.get("drift_review_minutes", 180))
+            if every and now - self._drift_at >= 60 * every and mission.render_charter(self.cfg):
+                self._drift_at = now
+                self.drift_review()
+        except Halted:
+            raise
+        except Exception as e:
+            self.store.add_event(None, "director", "note", {"text": f"oversight skipped: {type(e).__name__}: {e}"[:300]})
+
+    def drift_review(self) -> dict[str, Any]:
+        """An independent model checks the plan against the mission brief. Findings go to the director's prompt."""
+        res = drift.review(self.provider, self.store, self.cfg, self.memory.read_state(), json.dumps(self.board(), default=str)[:6000])
+        self.store.add_event(None, "drift_reviewer", "drift_review", {"on_track": res["on_track"], "advice": res["advice"][:400]})
+        atomic_write(self.workspace / "drift.json", json.dumps(res, indent=2))
+        if not res["on_track"]:
+            self.memory.append_journal(f"DRIFT REVIEW (independent): {res['advice']} off-charter={res['off_charter']} missing={res['missing']}")
+            if self.notify:
+                self.notify("info", "Drift review: work is off the mission", res["advice"][:400])
+        return res
+
+    def _drift_note(self) -> str:
+        p = self.workspace / "drift.json"
+        if not p.is_file():
+            return ""
+        try:
+            r = json.loads(p.read_text())
+        except ValueError:
+            return ""
+        if r.get("on_track", True):
+            return ""
+        return (f"# Independent drift review (act on it)\n{r.get('advice', '')}\nOff-charter: {r.get('off_charter')}\n"
+                f"Missing: {r.get('missing')}\n\n")
+
+    def _deps_ready(self, t: dict[str, Any]) -> bool:
+        """A ticket with unfinished dependencies waits. A failed or cancelled dependency is reported to the director once."""
+        if not t.get("depends_on"):
+            return True
+        if critical_path.deps_met(self.store, t):
+            return True
+        for d in t["depends_on"]:
+            try:
+                st = self.store.get_ticket(d)["status"]
+            except Exception:
+                continue
+            if st in ("failed", "cancelled") and t["id"] not in self._dep_flagged:
+                self._dep_flagged.add(t["id"])
+                self.store.escalate(t["id"], t["assignee"], f"dependency {d} {st}; replan or cancel this ticket",
+                                    kind="blocked", to="director")
+        return False
 
     def _act(self, a: dict[str, Any]) -> None:
         kind = a.get("type")
@@ -319,10 +411,12 @@ class Director:
                         for status in ("open", "in_progress"):
                             for t in self.store.list_tickets(status=status, assignee=m.name):
                                 if (t["id"] not in running and t["parent_id"] is None
-                                        and time.monotonic() >= not_before.get(t["id"], 0.0)):
+                                        and time.monotonic() >= not_before.get(t["id"], 0.0)
+                                        and self._deps_ready(t)):
                                     running[t["id"]] = pool.submit(one, m, t["id"])
                 if not halted:
                     self._watchdog(watch)
+                    self.oversight()
                 if keepalive and not halted and not self.finished:
                     self._heartbeats(last_beat, beat_secs)
                     if not running:                    # idle: stay alive, rescan for new tickets and heartbeats

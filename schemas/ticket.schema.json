@@ -2,51 +2,141 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Ticket",
   "type": "object",
-  "required": ["id", "title", "status", "created_by", "assignee", "worker_role", "path_trace", "context", "acceptance_criteria", "return_spec"],
+  "required": [
+    "id",
+    "title",
+    "status",
+    "created_by",
+    "assignee",
+    "worker_role",
+    "path_trace",
+    "context",
+    "acceptance_criteria",
+    "return_spec"
+  ],
   "properties": {
-    "id": { "type": "string" },
-    "title": { "type": "string" },
-    "status": {
-      "enum": ["open", "in_progress", "needs_clarification", "blocked", "escalated", "done", "failed", "cancelled"]
+    "id": {
+      "type": "string"
     },
-    "created_by": { "type": "string", "description": "Agent id of the submitter." },
-    "assignee": { "type": "string", "description": "Department manager id, or worker id once spawned." },
-    "cc": { "type": "array", "items": { "type": "string" }, "description": "e.g. director on cross-department tickets." },
-    "worker_role": { "type": "string", "description": "Role template used to spawn the worker." },
+    "title": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "open",
+        "in_progress",
+        "needs_clarification",
+        "blocked",
+        "escalated",
+        "done",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "created_by": {
+      "type": "string",
+      "description": "Agent id of the submitter."
+    },
+    "assignee": {
+      "type": "string",
+      "description": "Department manager id, or worker id once spawned."
+    },
+    "cc": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "e.g. director on cross-department tickets."
+    },
+    "worker_role": {
+      "type": "string",
+      "description": "Role template used to spawn the worker."
+    },
     "path_trace": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Ordered chain of agent/ticket ids this ticket came through."
     },
-    "parent_id": { "type": ["string", "null"] },
-    "children": { "type": "array", "items": { "type": "string" } },
+    "parent_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "children": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "context": {
       "type": "string",
       "description": "Only what the assignee needs. Prefer pointers to workspace files over pasted content."
     },
-    "workspace_refs": { "type": "array", "items": { "type": "string" } },
-    "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
-    "return_spec": {
-      "type": "object",
-      "required": ["format", "description"],
-      "properties": {
-        "format": { "type": "string", "description": "e.g. summary, file, dataset, patch, yes/no with evidence." },
-        "description": { "type": "string" },
-        "destination": { "type": "string", "description": "Workspace path for artifacts, if any." }
+    "workspace_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
       }
     },
-    "priority": { "enum": ["low", "normal", "high", "urgent"], "default": "normal" },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "return_spec": {
+      "type": "object",
+      "required": [
+        "format",
+        "description"
+      ],
+      "properties": {
+        "format": {
+          "type": "string",
+          "description": "e.g. summary, file, dataset, patch, yes/no with evidence."
+        },
+        "description": {
+          "type": "string"
+        },
+        "destination": {
+          "type": "string",
+          "description": "Workspace path for artifacts, if any."
+        }
+      }
+    },
+    "priority": {
+      "enum": [
+        "low",
+        "normal",
+        "high",
+        "urgent"
+      ],
+      "default": "normal"
+    },
     "rigor": {
-      "enum": ["quick_and_dirty", "balanced", "rigorous"],
+      "enum": [
+        "quick_and_dirty",
+        "balanced",
+        "rigorous"
+      ],
       "default": "balanced",
       "description": "How good is good enough. Set by the director's rigor profile; used by workers and Verification."
     },
     "budget": {
       "type": "object",
       "properties": {
-        "max_tokens": { "type": "integer" },
-        "max_cost_usd": { "type": "number" },
-        "max_minutes": { "type": "integer" }
+        "max_tokens": {
+          "type": "integer"
+        },
+        "max_cost_usd": {
+          "type": "number"
+        },
+        "max_minutes": {
+          "type": "integer"
+        }
       }
     },
     "questions": {
@@ -54,50 +144,132 @@
       "description": "Clarification requests going upward and their answers.",
       "items": {
         "type": "object",
-        "required": ["asked_by", "question"],
+        "required": [
+          "asked_by",
+          "question"
+        ],
         "properties": {
-          "asked_by": { "type": "string" },
-          "question": { "type": "string" },
-          "answered_by": { "type": "string" },
-          "answer": { "type": "string" }
+          "asked_by": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "answered_by": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          }
         }
       }
     },
-    "result": { "type": ["object", "null"], "description": "Filled on completion, shaped by return_spec." },
-    "verification_notes": { "type": "array", "items": { "type": "string" } },
+    "result": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Filled on completion, shaped by return_spec."
+    },
+    "verification_notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "code": {
       "type": "object",
       "description": "Marks a code ticket: the worker edits an isolated git worktree under these limits.",
       "properties": {
-        "allowed_paths": { "type": "array", "items": { "type": "string" }, "description": "Globs the worker may write." },
-        "acceptance": { "type": "array", "items": { "type": "string" }, "description": "Shell commands that must all exit 0 in the worktree." },
-        "context_files": { "type": "array", "items": { "type": "string" }, "description": "Files shown to the worker up front." }
+        "allowed_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Globs the worker may write."
+        },
+        "acceptance": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Shell commands that must all exit 0 in the worktree."
+        },
+        "context_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Files shown to the worker up front."
+        }
       }
     },
     "models": {
       "type": "object",
       "description": "Model choice for this ticket and everything below it (set by the level above, e.g. a stronger model for a hard ticket). Missing tiers use the config.",
       "properties": {
-        "manager": { "type": "string", "description": "Model for the manager deciding this ticket." },
-        "worker": { "type": "string", "description": "First model for workers under this ticket; the config's fallback chain follows." }
+        "manager": {
+          "type": "string",
+          "description": "Model for the manager deciding this ticket."
+        },
+        "worker": {
+          "type": "string",
+          "description": "First model for workers under this ticket; the config's fallback chain follows."
+        }
       }
     },
     "worker_tickets": {
       "type": "array",
       "description": "Precise worker tickets the manager must delegate as written, skipping its own planning.",
-      "items": { "type": "object" }
+      "items": {
+        "type": "object"
+      }
     },
     "escalation": {
       "type": "object",
       "description": "Present while the ticket is escalated or waiting on a question: who must handle it.",
       "properties": {
-        "to": { "enum": ["manager", "director", "human"] },
-        "kind": { "type": "string", "description": "blocked | technical | safety | refusal | question" },
-        "reason": { "type": "string" },
-        "handed_off_by": { "type": "string" }
+        "to": {
+          "enum": [
+            "manager",
+            "director",
+            "human"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "description": "blocked | technical | safety | refusal | question"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "handed_off_by": {
+          "type": "string"
+        }
       }
     },
-    "created_at": { "type": "string", "format": "date-time" },
-    "updated_at": { "type": "string", "format": "date-time" }
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "depends_on": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "ids of top-level tickets that must be done before this one starts"
+    },
+    "experiment": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "typed experiment: hypothesis, budget, outcome (confirmed|refuted|inconclusive)"
+    }
   }
 }

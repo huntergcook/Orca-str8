@@ -380,3 +380,19 @@ python -m pytest -q
 
 [MIT](LICENSE): use, copy, change, sell or relicense it however you like; just keep the copyright and license notice. Third-party tools the
 Tooling department downloads into a project keep their own licenses, which are recorded in that project's tool registry.
+
+## Staying on goal, seeing serial work, and not repeating mistakes
+
+- **Dependencies and critical path.** Tickets may carry `depends_on`; the director only declares them when really needed, so
+  independent work runs in parallel. `ctl board` shows `critical_path` (the longest unfinished chain, what is running, ready or
+  waiting). When work has been a one-at-a-time chain for `policies.serial_minutes` (20), the director gets a
+  `serial_bottleneck` journal line and you get a notification with tactics (split the head, start later steps speculatively,
+  research ahead). A failed dependency escalates the waiting ticket to the director.
+- **Drift review.** Every `policies.drift_review_minutes` (180; 0 = off) an independent model (a verifier model if configured)
+  compares the director's notes and the board with the mission brief. Findings are written to `workspace/drift.json` and put
+  in the director's prompt until it is back on track. Editing the mission brief mid-run is detected (`charter_changed`).
+- **LEARNINGS.md.** Managers return `dead_ends` / `learned` (and `outcome` for experiments: confirmed, refuted,
+  inconclusive); they are appended to `workspace/LEARNINGS.md` and shown to the director and every manager.
+- **Tracing.** `trace: {file: true, otlp_endpoint: http://localhost:4318}` exports every event as an OTLP/JSON span (one trace
+  per top-level ticket) to `workspace/traces.jsonl` and/or an OTLP collector. Compatibility with specific backends (Langfuse,
+  Phoenix, Laminar) is expected from the OTLP format but not verified here.

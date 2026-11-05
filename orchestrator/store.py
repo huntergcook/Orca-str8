@@ -216,10 +216,24 @@ class Store:
 
     def _event(self, c: sqlite3.Connection, ticket_id: str | None, actor: str,
                type_: str, payload: dict[str, Any] | None = None) -> None:
-        c.execute(
+        ts = _now()
+        cur = c.execute(
             "INSERT INTO events (ticket_id, ts, actor, type, payload) VALUES (?,?,?,?,?)",
-            (ticket_id, _now(), actor, type_, json.dumps(payload or {})),
+            (ticket_id, ts, actor, type_, json.dumps(payload or {})),
         )
+        tracer = getattr(self, "tracer", None)
+        if tracer is not None and tracer.enabled:
+            root = ticket_id
+            try:
+                for _ in range(8):
+                    row = c.execute("SELECT parent_id FROM tickets WHERE id=?", (root,)).fetchone()
+                    if not row or not row[0]:
+                        break
+                    root = row[0]
+            except Exception:
+                pass
+            tracer.emit({"seq": cur.lastrowid, "ts": ts, "actor": actor, "type": type_, "ticket_id": ticket_id,
+                         "payload": payload or {}}, root_of=root)
 
     def add_event(self, ticket_id: str | None, actor: str, type_: str,
                   payload: dict[str, Any] | None = None) -> None:
