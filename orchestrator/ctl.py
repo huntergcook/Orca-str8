@@ -92,7 +92,18 @@ class Ctl:
         for a in self.store.list_agents():
             d = team.setdefault(a["department"] or "?", {"active": 0, "finished": 0})
             d["finished" if a["state"] in ("done", "failed", "escalated") else "active"] += 1
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        quiet_s = 60 * float(self.cfg["policies"].get("quiet_minutes", 5))
+        live: list[dict[str, Any]] = []
+        for a in self.store.list_agents():          # heartbeat: every model call / tool step refreshes updated_at
+            if a["state"] in ("done", "failed", "escalated", "cancelled", "stopped"):
+                continue
+            idle = (now - datetime.fromisoformat(a["updated_at"])).total_seconds()
+            live.append({"agent": a["name"], "dept": a["department"], "ticket": a["ticket_id"], "state": a["state"],
+                         "detail": (a["detail"] or "")[:80], "last_seen_s": int(idle), "quiet": idle > quiet_s})
         return {"tickets": rows, "needs_attention": attention,
+                "agents": live, "quiet_agents": [x for x in live if x["quiet"]],
                 "managers_handling": [{k: i[k] for k in ("id", "title", "status", "why")} for i in handled_below],
                 "follow_ups": follow_ups, "team": team,
                 "halted": self._halt_reason(), "run_active": self.run_active()}

@@ -213,6 +213,9 @@ class TopManager:
                 if last is None or watch["warned"].get(t["id"]) == last["seq"]:
                     continue
                 age = (datetime.now(timezone.utc) - datetime.fromisoformat(last["ts"])).total_seconds()
+                for a in self.store.list_agents():     # an agent's heartbeat counts as activity
+                    if a["ticket_id"] == t["id"] and a["state"] not in ("done", "failed", "escalated", "cancelled", "stopped"):
+                        age = min(age, (datetime.now(timezone.utc) - datetime.fromisoformat(a["updated_at"])).total_seconds())
                 if age < limit:
                     continue
                 watch["warned"][t["id"]] = last["seq"]
