@@ -40,7 +40,14 @@ def python_exe(workspace: str | Path) -> str:
 
 def resolve_in_workspace(workspace: str | Path, rel: str) -> Path:
     root = Path(workspace).resolve()
+    rel = str(rel).replace("\\", "/")
     p = (root / rel).resolve()
+    # Agents often write paths from the project folder ("workspace/research/x.md") instead of from the
+    # workspace ("research/x.md"). Accept that form unless the literal nested path really exists.
+    for prefix in (f"{root.name}/", f"./{root.name}/"):
+        if rel.startswith(prefix) and not p.exists():
+            p = (root / rel[len(prefix):]).resolve()
+            break
     if p != root and root not in p.parents:
         raise StoreError(f"path escapes workspace: {rel}")
     return p

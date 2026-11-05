@@ -128,6 +128,7 @@ class Manager:
             read_roots=self.cfg.get("read_roots") or [], departments=self.departments,
                           approve_requests=bool(self.cfg["policies"].get("approve_cross_department_work")),
             can_acquire=self.can_acquire_tools, can_use_hardware=self.can_use_hardware, jobs=self.jobs,
+            can_fetch_web=bool(self.cfg["policies"].get("allow_web_fetch", True)),
             code_repo=self.code_repo if self.writes_code else None, code_cfg=self.cfg.get("code") or {},
             my_tickets=(lambda: {c["id"] for c in self.store.list_tickets(parent_id=ticket_id)}) if ticket_id else None)
 
@@ -227,7 +228,8 @@ class Manager:
         box = CodeToolBox(self.workspace, c["assignee"], root=worktree, spec=spec,
                           timeout=float(code_cfg.get("test_timeout", 600)), store=self.store, ticket_id=c["id"],
                           departments=self.departments,
-                          approve_requests=bool(self.cfg["policies"].get("approve_cross_department_work")))
+                          approve_requests=bool(self.cfg["policies"].get("approve_cross_department_work")),
+                          can_fetch_web=bool(self.cfg["policies"].get("allow_web_fetch", True)))
 
         def gate_cb(result: dict[str, Any]) -> str | None:
             repo.commit_all(c["id"], f"{c['id']}: {c['title']}")
@@ -261,7 +263,8 @@ class Manager:
             box = ToolBox(self.workspace, actor=c["assignee"], can_acquire=self.can_acquire_tools,
                           store=self.store, ticket_id=c["id"], can_use_hardware=self.can_use_hardware,
                           jobs=self.jobs, read_roots=self.cfg.get("read_roots") or [], departments=self.departments,
-                          approve_requests=bool(self.cfg["policies"].get("approve_cross_department_work")))
+                          approve_requests=bool(self.cfg["policies"].get("approve_cross_department_work")),
+                          can_fetch_web=bool(self.cfg["policies"].get("allow_web_fetch", True)))
             run_ticket(self.store, self.provider, c["id"], c["assignee"], self._with_rules(load_role(c["worker_role"])),
                        models, self.cfg["policies"]["capability_retry_limit"], toolbox=box, department=self.department,
                        max_tool_steps=int(self.cfg["policies"].get("max_tool_steps", 40)),

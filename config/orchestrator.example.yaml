@@ -37,6 +37,7 @@ policies:
   max_worker_retries: 2       # manager retries per worker before it must delegate differently or give up
   default_rigor: balanced     # quick_and_dirty | balanced | rigorous
   verification_is_advisory: true
+  allow_web_fetch: true       # workers may read public https pages (docs, papers) with fetch_url
 
 verification:
   enabled: true                # independent advisory check on every manager result

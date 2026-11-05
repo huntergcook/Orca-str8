@@ -55,6 +55,7 @@ DEFAULTS: dict[str, Any] = {
         "max_worker_retries": 2,       # manager retries per worker before it must delegate differently or give up
         "default_rigor": "balanced",
         "verification_is_advisory": True,
+        "allow_web_fetch": True,       # workers may read public https pages (fetch_url); false = no web access
     },
     "verification": {
         "enabled": False,        # gate manager results through independent verifiers
