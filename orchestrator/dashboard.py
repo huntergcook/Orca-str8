@@ -11,6 +11,8 @@ import argparse
 import json
 import secrets
 import sqlite3
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,8 @@ from pydantic import BaseModel
 
 from . import actions
 from .config import enter_project, load_config
+from .limits import cost_estimate
+from .providers import fetch_balances
 from .store import Store, StoreError
 
 STATIC = Path(__file__).parent / "static" / "index.html"
@@ -51,7 +55,7 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
             return {"id": t["id"], "title": t["title"], "status": t["status"], "assignee": t["assignee"],
                     "level": "top" if t["parent_id"] is None else "worker", "route": actions.route_of(t),
                     "detail": next((q["question"] for q in t["questions"] if "answer" not in q), ""),
-                    "why": why(t["id"])}
+                    "why": why(t["id"]), "kind": (t.get("escalation") or {}).get("kind", "")}
 
         # Only what reached the human: safety/refusals by policy, or handed off by the top manager.
         # Everything else is still being handled by a manager or the top manager.
@@ -88,7 +92,8 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
                                      "summary": str((t.get("result") or {}).get("summary", ""))[:200]})
 
         board = [{"id": t["id"], "title": t["title"], "status": t["status"], "assignee": t["assignee"],
-                  "trace": t["path_trace"], "rigor": t.get("rigor", "balanced"), "parent_id": t["parent_id"]}
+                  "trace": t["path_trace"], "rigor": t.get("rigor", "balanced"), "parent_id": t["parent_id"],
+                  "models": t.get("models") or {}}
                  for t in tickets]
 
         resources = [dict(r) for r in c.execute("SELECT * FROM resources ORDER BY name")]
@@ -134,6 +139,10 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
         events = [{**dict(r), "payload": json.loads(r["payload"])} for r in c.execute(
             "SELECT * FROM events WHERE type != 'usage' ORDER BY seq DESC LIMIT ?", (event_limit,))]
 
+        unavailable: dict[str, dict[str, Any]] = {}       # models skipped for quota or limits (latest per model)
+        for r in c.execute("SELECT ts, payload FROM events WHERE type='model_unavailable' ORDER BY seq DESC LIMIT 200"):
+            p = json.loads(r["payload"])
+            unavailable.setdefault(p.get("model", "?"), {"model": p.get("model", "?"), "why": p.get("why", ""), "ts": r["ts"]})
         integration = None
         try:
             from .codework import code_repo_from_cfg
@@ -143,7 +152,8 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
             integration = None
         return {"needs_human": needs_human, "handling": handling, "code_pending": code_pending, "org": org, "by_status": by_status, "board": board,
                 "resources": resources, "jobs": jobs, "spend": spend, "events": events, "agents": agents,
-                "usage_by_department": usage_by_dept, "integration": integration}
+                "usage_by_department": usage_by_dept, "integration": integration,
+                "unavailable_models": list(unavailable.values())}
     finally:
         c.close()
 
@@ -204,7 +214,8 @@ class ActionIn(BaseModel):
 
 
 def create_app(db_path: str | Path, cfg: dict[str, Any] | None = None, launch_run: Any = None,
-               project: str | Path | None = None, token: str | None = None) -> FastAPI:
+               project: str | Path | None = None, token: str | None = None,
+               balance_fn: Any | None = None) -> FastAPI:
     cfg = cfg or load_config(None)
     token = token or secrets.token_urlsafe(24)
     project = Path(project) if project else Path.cwd()
@@ -213,9 +224,33 @@ def create_app(db_path: str | Path, cfg: dict[str, Any] | None = None, launch_ru
     app = FastAPI(title="Orchestrator dashboard", docs_url=None, redoc_url=None)
     app.state.token = token
 
+    money = {"at": -1e9, "balances": {}}
+    money_lock = threading.Lock()
+
+    def balances() -> dict[str, Any]:
+        """Real provider balances, re-read at most once a minute (a network call)."""
+        with money_lock:
+            if time.monotonic() - money["at"] >= 60:
+                try:
+                    money["balances"] = (balance_fn or (lambda: fetch_balances(cfg)))()
+                except Exception:
+                    money["balances"] = {}
+                money["at"] = time.monotonic()
+            return money["balances"]
+
     @app.get("/api/state")
     def state() -> dict[str, Any]:
         out = build_state(db_path, cfg)
+        try:
+            st = Store(db_path)
+            try:
+                out["spend"]["estimated_usd"] = cost_estimate(st, cfg)
+            finally:
+                st.close()
+        except Exception:
+            out["spend"]["estimated_usd"] = None
+        out["spend"]["balances"] = balances()
+        out["spend"]["stop_below_balance_usd"] = cfg["budget"].get("stop_below_balance_usd")
         out["run_active"] = actions.run_is_active(workspace)
         # work that needs a run but has none: typical after a crash, restart or power loss
         out["unfinished"] = [] if out["run_active"] else [

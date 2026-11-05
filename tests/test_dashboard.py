@@ -34,7 +34,7 @@ def test_state_and_html(store, tmp_path):
     store.register_resource("scope", "stop between sweeps")
     store.add_event(None, "w", "usage", {"input_tokens": 10, "output_tokens": 5})
 
-    client = TestClient(create_app(tmp_path / "t.db"))
+    client = TestClient(create_app(tmp_path / "t.db", balance_fn=lambda: {}))
     s = client.get("/api/state").json()
     assert [n["title"] for n in s["needs_human"]] == ["Unsafe thing"]
     assert s["org"]["research_manager"][0]["worker"] == "worker:x"
@@ -62,3 +62,25 @@ def test_demo_seed_fills_every_panel(tmp_path):
     assert kinds == {"escalated", "needs_clarification"}
     assert s["resources"] and s["jobs"] and s["org"] and s["events"] and s["spend"]["input_tokens"] == 120000
     assert s["by_status"]["done"] >= 2
+
+
+def test_dashboard_shows_proposals_models_skipped_models_and_real_money(store, tmp_path):
+    from orchestrator.config import load_config
+    prop = mk(store, title="Build X for research", assignee="software_manager")
+    store.escalate(prop["id"], "research_manager", "proposed by research_manager", kind="proposal", to="top_manager")
+    hard = mk(store, title="Hard one")
+    store.set_models(hard["id"], "top_manager", {"worker": "deepseek-v4-pro"})
+    store.add_event(hard["id"], "w", "model_unavailable", {"model": "claude-cli:haiku", "why": "hit your 5-hour limit"})
+    store.add_event(None, "w", "usage", {"model": "flash", "input_tokens": 1_000_000, "output_tokens": 0})
+    cfg = load_config(None)
+    cfg["prices"] = {"flash": {"input": 1.0, "output": 2.0}}
+    cfg["budget"]["stop_below_balance_usd"] = 0.5
+    client = TestClient(create_app(tmp_path / "t.db", cfg=cfg, balance_fn=lambda: {"deepseek": {"usd": 6.61}}))
+    s = client.get("/api/state").json()
+    assert any(h["kind"] == "proposal" and h["title"] == "Build X for research" for h in s["handling"])
+    assert next(t for t in s["board"] if t["id"] == hard["id"])["models"] == {"worker": "deepseek-v4-pro"}
+    assert s["unavailable_models"][0]["model"] == "claude-cli:haiku"
+    assert s["spend"]["estimated_usd"] == pytest.approx(1.0)
+    assert s["spend"]["balances"] == {"deepseek": {"usd": 6.61}} and s["spend"]["stop_below_balance_usd"] == 0.5
+    html = client.get("/").text
+    assert "Approve" in html and "Models skipped" in html and "balance" in html

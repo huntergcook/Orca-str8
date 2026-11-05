@@ -74,13 +74,13 @@ function renderNeed(items) {
   document.querySelectorAll("#need textarea").forEach(t => typed[t.dataset.id] = t.value);
   needSig = sig;
   $("need").innerHTML = rows(items, n => {
-    const q = n.status === "needs_clarification";
+    const q = n.status === "needs_clarification", prop = n.kind === "proposal";
     return `<div class="item" data-id="${esc(n.id)}"><div><b>${esc(n.title)}</b> <code>${esc(n.id)}</code> ` +
       `<span class="pill">${esc(n.status)}</span> <span class="mut">${esc(n.level)} · ${esc(String(n.assignee).replace(/^worker:/, ""))}</span></div>` +
       `<div class="why">${esc(q ? n.detail : n.why) || "(no reason recorded)"}</div>` +
       `<textarea data-id="${esc(n.id)}" rows="2" placeholder="${q ? "Your answer" : "Guidance for the retry (optional)"}">${esc(typed[n.id] || "")}</textarea>` +
-      `<div class="btns">${q ? '<button data-act="answer">Answer</button>' : '<button data-act="retry">Retry</button>'}` +
-      `<button data-act="cancel" class="sec">Cancel ticket</button><span class="msg"></span></div></div>`;
+      `<div class="btns">${q ? '<button data-act="answer">Answer</button>' : prop ? '<button data-act="retry">Approve</button>' : '<button data-act="retry">Retry</button>'}` +
+      `<button data-act="cancel" class="sec">${prop ? "Decline" : "Cancel ticket"}</button><span class="msg"></span></div></div>`;
   });
 }
 $("need").addEventListener("click", async e => {
@@ -140,7 +140,7 @@ function render(s) {
   $("handling-sec").hidden = !s.handling.length;
   $("hn").textContent = s.handling.length + " item" + (s.handling.length === 1 ? "" : "s") + " your managers are working on";
   $("handling").innerHTML = rows(s.handling, n => `<div class="item"><b>${esc(n.title)}</b> <code>${esc(n.id)}</code> ` +
-    `<span class="pill">${esc(n.status)}</span> <span class="mut">with ${n.route === "manager" ? "its department manager" : "the top manager"}</span>` +
+    `<span class="pill">${esc(n.kind === "proposal" ? "proposal" : n.status)}</span> <span class="mut">with ${n.route === "manager" ? "its department manager" : "the top manager"}</span>` +
     `<div class="mut">${esc(n.why || n.detail)}</div></div>`);
   renderTeam(s);
   $("hw").innerHTML = (s.resources.length ? `<table><tr><th>resource</th><th>state</th><th>holder</th><th>safe to stop</th></tr>` +
@@ -153,11 +153,20 @@ function render(s) {
     rows(ud, ([d, u]) => `<tr><td>${esc(d)}</td><td>${fmt(u.calls)}</td><td>${fmt(u.input_tokens)}</td><td class="mut">${fmt(u.cache_hit_tokens)}</td><td>${fmt(u.output_tokens)}</td></tr>`) + `</table>` : "";
   const integ = s.integration && s.integration.exists ? `<div class="mut" style="margin-top:6px">integration branch <code>${esc(s.integration.branch)}</code>: ` +
     `${s.integration.ahead} commit(s) ahead of ${esc(s.integration.base)}</div>` : "";
-  $("spend").innerHTML = deptTable + integ + `<div>${tot.toLocaleString()} tokens <span class="mut">(${sp.input_tokens.toLocaleString()} in / ${sp.output_tokens.toLocaleString()} out)</span></div>` +
+  const bal = Object.entries(sp.balances || {}).map(([p, b]) => b.usd !== undefined
+    ? `<b>${esc(p)}</b> balance $${Number(b.usd).toFixed(2)}${sp.stop_below_balance_usd != null && b.usd < sp.stop_below_balance_usd ? ' <span class="failed">below floor</span>' : ""}`
+    : `<span class="mut">${esc(p)} balance unavailable (${esc(b.error || "?")})</span>`).join(" · ");
+  const money = `<div>${bal || '<span class="mut">no provider reports a balance</span>'}` +
+    `${sp.stop_below_balance_usd != null ? ' <span class="mut">(runs stop below $' + Number(sp.stop_below_balance_usd).toFixed(2) + ")</span>" : ""}</div>` +
+    `<div class="mut">estimated spend ${sp.estimated_usd != null ? "$" + Number(sp.estimated_usd).toFixed(2) : "unknown (no prices)"}${sp.max_cost_usd ? " of $" + sp.max_cost_usd + " cap" : ""}</div>`;
+  const skipped = (s.unavailable_models || []).length ? `<div style="margin-top:6px"><b>Models skipped</b> (quota or limit) ` +
+    rows(s.unavailable_models, m => `<div class="mut"><code>${esc(m.model)}</code> ${ago(m.ts)} ago: ${esc(String(m.why).slice(0, 140))}</div>`) + `</div>` : "";
+  $("spend").innerHTML = money + skipped + deptTable + integ + `<div>${tot.toLocaleString()} tokens <span class="mut">(${sp.input_tokens.toLocaleString()} in / ${sp.output_tokens.toLocaleString()} out)</span></div>` +
     `<div class="mut">budget: ${sp.max_tokens ? tot.toLocaleString() + " / " + sp.max_tokens.toLocaleString() + " tokens" : "none"}${sp.max_cost_usd ? ", $" + sp.max_cost_usd + " cap" : ""}</div>`;
   $("counts").innerHTML = rows(Object.entries(s.by_status), ([k, v]) => `<span class="pill ${esc(k)}">${esc(k)} ${v}</span>`) || '<span class="mut">no tickets</span>';
-  $("board").innerHTML = s.board.length ? `<table><tr><th>id</th><th>title</th><th>status</th><th>assignee</th><th>rigor</th><th>trace</th></tr>` +
-    rows(s.board, t => `<tr><td><code>${esc(t.id)}</code></td><td>${esc(t.title)}</td><td class="${esc(t.status)}">${esc(t.status)}</td><td>${esc(t.assignee)}</td><td class="mut">${esc(t.rigor)}</td><td class="mut">${esc(t.trace.join(" > "))}</td></tr>`) + `</table>` : "";
+  const mdl = m => Object.entries(m || {}).map(([k, v]) => k + ": " + v).join(", ");
+  $("board").innerHTML = s.board.length ? `<table><tr><th>id</th><th>title</th><th>status</th><th>assignee</th><th>rigor</th><th>models</th><th>trace</th></tr>` +
+    rows(s.board, t => `<tr><td><code>${esc(t.id)}</code></td><td>${esc(t.title)}</td><td class="${esc(t.status)}">${esc(t.status)}</td><td>${esc(t.assignee)}</td><td class="mut">${esc(t.rigor)}</td><td class="mut">${esc(mdl(t.models))}</td><td class="mut">${esc(t.trace.join(" > "))}</td></tr>`) + `</table>` : "";
   $("events").innerHTML = `<table>` + rows(s.events, e =>
     `<tr><td class="mut">${esc(e.ts.slice(11, 19))}</td><td>${esc(e.actor)}</td><td>${esc(e.type)}</td><td class="mut">${esc(e.ticket_id ?? "")} ${esc(JSON.stringify(e.payload))}</td></tr>`) + `</table>`;
   $("stamp").textContent = "updated " + new Date().toLocaleTimeString() + (s.run_active ? " · run active" : " · no run active");

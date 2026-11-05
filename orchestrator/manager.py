@@ -160,6 +160,8 @@ class Manager:
                 c = self.provider.complete(model=model, system=system, messages=msgs)
             except ModelUnavailable as e:
                 mark_unavailable(model, str(e))
+                if ticket_id:
+                    self.store.add_event(ticket_id, self.name, "model_unavailable", {"model": model, "why": str(e)[:300]})
                 continue
             self.store.record_usage(ticket_id, self.name, self.department, c, self._agent_id(ticket_id))
             if ticket_id and self.store.get_ticket(ticket_id)["status"] == "cancelled":

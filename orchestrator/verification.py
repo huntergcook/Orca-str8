@@ -131,6 +131,7 @@ class Verifier:
                 reports.append(self._one(model, system, user, ticket["id"]))
             except ModelUnavailable as e:
                 mark_unavailable(model, str(e))
+                self.store.add_event(ticket["id"], "verifier", "model_unavailable", {"model": model, "why": str(e)[:300]})
                 reports.append({"model": model, "verdict": "concerns", "issues": [f"verifier unavailable: {e}"[:300]],
                                 "advice": "this check could not run on this model"})
         worst = max((r["verdict"] for r in reports), key=ORDER.get, default="pass")
