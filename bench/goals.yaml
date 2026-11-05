@@ -1,0 +1,17 @@
+# Canned goals for scoring the harness itself. `python -m orchestrator.bench run bench/goals.yaml --config config/orchestrator.yaml`
+# runs each in a fresh temp project with your real models and appends a line per goal to bench/results.jsonl
+# (finished?, minutes, tokens, estimated cost). `python -m orchestrator.bench compare` shows the trend, so a change to the
+# harness (or a self-improvement the harness proposes) is accepted only if scores do not get worse.
+- name: fix-failing-test
+  goal: "The function in src/mathx.py must return correct results and the tests in tests/ must pass."
+  success_criteria: ["pytest passes", "src/mathx.py is not rewritten into a stub"]
+  success_checks: ["python -m pytest -q"]
+  rigor: balanced
+  files:
+    src/mathx.py: "def mean(xs):\n    return sum(xs) / (len(xs) + 1)\n"
+    tests/test_mathx.py: "import sys\nsys.path.insert(0, 'src')\nfrom mathx import mean\n\ndef test_mean():\n    assert mean([1, 2, 3]) == 2\n    assert mean([5]) == 5\n"
+- name: write-and-verify-tool
+  goal: "Create tools/wordcount.py: a CLI that prints the number of words in a file given as its first argument."
+  success_criteria: ["tools/wordcount.py exists", "running it on a sample file prints the correct count"]
+  success_checks: ["python -c \"import subprocess,sys;open('s.txt','w').write('a b  c\\n d');r=subprocess.run([sys.executable,'tools/wordcount.py','s.txt'],capture_output=True,text=True);sys.exit(0 if r.stdout.strip()=='4' else 1)\""]
+  rigor: quick_and_dirty

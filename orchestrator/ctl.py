@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import actions, critical_path, routing
+from . import actions, critical_path, report, routing
 from .codework import CodeError, CodeRepo, code_repo_from_cfg, rework_spec
 from .config import enter_project, load_config, model_chain
 from .hardware import hardware_brief
@@ -527,6 +527,10 @@ class Ctl:
         self.director.memory.append_journal(text)
         return {"logged": True}
 
+    def report(self) -> dict[str, Any]:
+        p = report.write(self.store, self.cfg, self.workspace)
+        return {"report": str(p), "text": p.read_text(encoding="utf-8")}
+
     def finish(self, summary: str) -> dict[str, Any]:
         self.director.memory.append_journal(f"FINISHED: {summary}")
         atomic_write(self.workspace / "FINISHED", summary)
@@ -570,6 +574,7 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("resume", "board", "run", "pause", "unpause", "recover", "balance"):
         sub.add_parser(name)
+    sub.add_parser("report", help="write workspace/REPORT.md: the one-page homecoming report")
     sub.add_parser("ticket").add_argument("id")
     c = sub.add_parser("create")
     c.add_argument("--file", help="JSON file (default: read JSON from stdin)")

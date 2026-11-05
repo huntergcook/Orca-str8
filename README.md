@@ -407,3 +407,12 @@ spending or irreversible actions beyond the brief, reserved items, refusals, or 
 `policies.min_free_memory_mb` and `max_cpu_load` halve (or drop to 1) concurrent tickets when the machine is short of RAM or CPU
 (`parallelism_reduced` event); it recovers on its own. `outcome_routing` demotes a worker model with a clearly poor record in a
 department (needs `routing_min_samples` outcomes); the scorecard is in `ctl board`.
+
+## Report, evidence, and benchmarking the harness itself
+- `ctl report` (also written automatically when the goal is met) produces `workspace/REPORT.md`: goal, success criteria, latest
+  check output, every decision the director made for you, learnings and dead ends, completed and open work, pace, and cost.
+- Every success-check run saves its commands, exit codes and output to `workspace/evidence/`. The final verification ticket is
+  now framed as a hostile review that must try to break the result.
+- `python -m orchestrator.bench run bench/goals.yaml` runs canned goals through the real daemon with your configured models and
+  appends results to `bench/results.jsonl`; `bench compare` flags regressions (a goal that stopped finishing, or token use up
+  50%). Use it before and after any change to the harness, including changes the harness makes to itself.

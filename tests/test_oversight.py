@@ -130,3 +130,35 @@ def test_director_decide_action_is_logged_and_shown(tmp_path):
     assert "drop feature Y" in (ctl.director.workspace / "DECISIONS.md").read_text()
     assert "drop feature Y" in ctl.director._system_prompt()
     assert any(e["type"] == "decision" for e in ctl.store.events(None))
+
+
+def test_report_and_evidence(tmp_path):
+    ctl, cfg = mk(tmp_path)
+    ctl.director._act({"type": "decide", "decision": "ship small", "basis": "rigor"})
+    ctl.director.create_ticket(dict(TICKET, title="Survey X"))
+    out = ctl.report()
+    assert "ship small" in out["text"] and "Survey X" in out["text"] and "X works" in out["text"]
+    assert (ctl.workspace / "REPORT.md").is_file()
+
+
+def test_daemon_saves_check_evidence(tmp_path):
+    from test_daemon import daemon
+    d, cfg, _ = daemon(tmp_path, [j(say="ok", actions=[TICKET]), j(action="done", notes="n", result={"summary": "s"})])
+    d._checks(Ctl(cfg, cfg["workspace"], MockProvider([])))
+    assert list((d.workspace / "evidence").glob("checks-*.txt"))
+
+
+def test_bench_runs_a_goal_offline_and_compares(tmp_path):
+    import sys
+    from orchestrator import bench
+    ok = f'"{sys.executable}" -c "import sys; sys.exit(0)"'
+    spec = {"name": "g1", "goal": "do it", "success_checks": [ok], "files": {"a.txt": "x"}}
+    script = [j(say="go", actions=[TICKET]), j(action="done", notes="n", result={"summary": "s"}),
+              j(say="done", actions=[])] + [j(say="x", actions=[])] * 6
+    cfg_patch = {"restart_backoff_seconds": 0}
+    from orchestrator.providers import MockProvider
+    res = bench.run_goal(spec, tmp_path, provider=MockProvider(script), max_minutes=0.1, cfg_patch=cfg_patch)
+    assert res["goal"] == "g1" and "finished" in res
+    p = tmp_path / "r.jsonl"
+    p.write_text(json.dumps({**res, "finished": True, "tokens": 10}) + "\n" + json.dumps({**res, "finished": False, "tokens": 10}) + "\n")
+    assert "REGRESSION" in bench.compare(p)

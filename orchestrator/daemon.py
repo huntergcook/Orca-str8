@@ -136,6 +136,13 @@ class Daemon:
         failed = [r for r in res if not r["ok"]]
         report = "\n".join(f"- {'PASS' if r['ok'] else 'FAIL'} `{r['command']}`" + ("" if r["ok"] else f" (rc {r['rc']}): {r['tail']}")
                            for r in res)
+        try:                                              # keep the proof: what ran, what it printed
+            ev = self.workspace / "evidence"
+            ev.mkdir(exist_ok=True)
+            atomic_write(ev / f"checks-{time.strftime('%Y%m%d-%H%M%S')}.txt",
+                         "\n\n".join(f"$ {r['command']}\nexit {r['rc']}\n{r.get('tail', '')}" for r in res))
+        except Exception:
+            pass
         return not failed, report, res
 
     def finish_gate(self, ctl: Ctl) -> tuple[bool, str]:
@@ -153,8 +160,11 @@ class Daemon:
         if not any(t["status"] in ("open", "in_progress", "needs_clarification", "escalated", "blocked") for t in tickets):
             ctl.director.create_ticket({
                 "department": "verification", "title": FINAL_TITLE, "rigor": "rigorous",
-                "context": ("Check the project's results against the mission brief and its success criteria, with real "
-                            "evidence from the workspace. Do not accept claims; look at the files and outputs."),
+                "context": ("Act as a hostile reviewer. Check the project's results against the mission brief and each success "
+                            "criterion with real evidence from the workspace: run it, open the files, read the outputs. Try to "
+                            "break the result (edge cases, a clean checkout, the not_goals and hard_constraints). Do not accept "
+                            "claims or green checks at face value: ask what a passing check would miss. Save evidence under "
+                            "workspace/evidence/. Verdict pass only if every criterion is proven."),
                 "acceptance_criteria": ["every success criterion in the mission brief is checked against evidence"],
                 "return_spec": {"format": "json", "description": '{"verdict": "pass|concerns|fail", "gaps": ["..."]}'},
                 "worker_role": "verifier"})
@@ -347,6 +357,10 @@ class Daemon:
             ok, report, _ = self._checks(ctl)
             if ok:
                 ctl.finish("All of the mission's success checks pass.")
+                try:
+                    ctl.report()
+                except Exception:
+                    pass
                 notify("done", "Goal met", f"All success checks pass:\n{report}"[:1500])
                 self._save(phase="finished")
                 return "finished"
