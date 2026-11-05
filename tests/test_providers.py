@@ -185,3 +185,24 @@ def test_cache_writes_and_reads_are_priced_separately():
     prices = {"m": {"input": 0.10, "cache_hit": 0.01, "output": 0.50}}                  # Haiku 5.5 rates
     # 1M uncached * 0.10 + 8M reads * 0.01 + 1M writes * 0.125 (1.25x input) + 1M out * 0.50
     assert estimate_cost(u, prices) == pytest.approx(0.10 + 0.08 + 0.125 + 0.50)
+
+
+def test_an_anthropic_key_can_be_limited_to_one_model_and_a_fixed_effort():
+    from orchestrator.providers import AnthropicProvider, ModelUnavailable
+    fake = _FakeAnthropic(_msg("ok"))
+    p = AnthropicProvider(client=fake, allowed_models=["claude-haiku-5-5"], effort="medium")
+    p.complete(model="claude-haiku-5-5", system="s", messages=[{"role": "user", "content": "q"}])
+    assert fake.kwargs["output_config"] == {"effort": "medium"}
+    fake.kwargs = None
+    with pytest.raises(ModelUnavailable, match="not allowed"):
+        p.complete(model="claude-sonnet-5-5", system="s", messages=[])
+    assert fake.kwargs is None                                                           # nothing was sent
+
+
+def test_build_provider_passes_the_anthropic_limits_from_config():
+    cfg = load_config(None)
+    cfg["providers"]["anthropic"] = {"api_key_env": "X", "allowed_models": ["claude-haiku-5-5"], "effort": "medium"}
+    r = build_provider(cfg)
+    import orchestrator.providers as pr
+    made = r.factories["anthropic"].__defaults__[0] if r.factories["anthropic"].__defaults__ else None
+    assert made == cfg["providers"]["anthropic"]

@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .providers import Completion, Provider, fetch_balances
+from .providers import Completion, ModelUnavailable, Provider, fetch_balances
 from .store import Store
 
 
@@ -69,6 +69,24 @@ def estimate_cost_split(split: dict[str, dict[str, dict[str, int]]], prices: dic
         for period, u in periods.items():
             total += _cost(u, _rates(p, period == "off_peak"))
     return total if priced else None
+
+
+def cost_by_model(store: Store, cfg: dict[str, Any]) -> dict[str, float]:
+    """Estimated USD per model (off-peak aware), for models with a price."""
+    prices = cfg.get("prices") or {}
+    window = cfg.get("price_off_peak_utc")
+    out: dict[str, float] = {}
+    if window and len(window) == 2:
+        for model, periods in store.usage_by_model_split((str(window[0]), str(window[1]))).items():
+            p = _price(prices, model)
+            if p:
+                out[model] = sum(_cost(u, _rates(p, period == "off_peak")) for period, u in periods.items())
+    else:
+        for model, u in store.usage_by_model().items():
+            p = _price(prices, model)
+            if p:
+                out[model] = _cost(u, _rates(p, False))
+    return out
 
 
 def cost_estimate(store: Store, cfg: dict[str, Any]) -> float | None:
@@ -135,9 +153,28 @@ class GuardedProvider:
             if cost is not None and cost >= float(b["max_cost_usd"]):
                 raise Halted(f"cost budget exhausted (${cost:.2f} of ${float(b['max_cost_usd']):.2f})")
 
+    def model_cap_exhausted(self, model: str) -> str | None:
+        """budget.max_cost_usd_by_model: {model id or prefix: USD}. A model past its cap is skipped (ModelUnavailable),
+        so its tickets fall through to the next model in the chain instead of halting the whole run."""
+        caps = self.cfg["budget"].get("max_cost_usd_by_model") or {}
+        bare = model.split(":", 1)[-1]
+        mine = {k: v for k, v in caps.items() if model.startswith(str(k)) or bare.startswith(str(k))}
+        if not mine:
+            return None
+        spent = cost_by_model(self.store, self.cfg)
+        for prefix, cap in mine.items():
+            used = sum(v for m, v in spent.items()
+                       if m.startswith(str(prefix)) or m.split(":", 1)[-1].startswith(str(prefix)))
+            if used >= float(cap):
+                return f"cost cap for {prefix}* reached (${used:.2f} of ${float(cap):.2f}; budget.max_cost_usd_by_model)"
+        return None
+
     def complete(self, *, model: str, system: str, messages: list[dict[str, Any]],
                  max_tokens: int = 16000) -> Completion:
         self.check()
+        why = self.model_cap_exhausted(model)
+        if why:
+            raise ModelUnavailable(why)
         with self._slots:                 # waits here when max_concurrent_calls are already in flight
             self.check()                  # the budget may have run out while waiting
             return self.inner.complete(model=model, system=system, messages=messages, max_tokens=max_tokens)

@@ -515,3 +515,22 @@ def test_cancel_frees_hardware_once_no_job_of_the_ticket_is_running(store, tmp_p
         proc.kill()
         proc.wait()
     assert actions.release_abandoned_holds(store) == ["pc"]                       # freed as soon as the job ended
+
+
+def test_a_model_past_its_cost_cap_is_skipped_and_the_fallback_takes_over(store, tmp_path):
+    from orchestrator import providers
+    providers.UNAVAILABLE.clear()
+    cfg = load_config(None)
+    cfg["prices"] = {"claude-haiku-5-5": {"input": 1.0, "output": 1.0}, "flash": {"input": 0.0, "output": 0.0}}
+    cfg["budget"]["max_cost_usd_by_model"] = {"claude-": 2.0}
+    store.record_usage(None, "w", "x", Completion(text="", model="claude-haiku-5-5", input_tokens=3_000_000))
+    g = GuardedProvider(Probe(delay=0), store, cfg, tmp_path)
+    assert "cost cap for claude-" in (g.model_cap_exhausted("claude-haiku-5-5") or "")
+    assert g.model_cap_exhausted("flash") is None
+    tid = store.create_ticket({**SPEC, "title": "w", "assignee": "worker:r-1"}, "m")["id"]
+    try:
+        out = run_ticket(store, g, tid, "w", "role", ["claude-haiku-5-5", "flash"])
+        assert out["status"] == "done"
+        assert {e["payload"]["model"] for e in store.events(tid) if e["type"] == "usage"} == {"flash"}
+    finally:
+        providers.UNAVAILABLE.clear()

@@ -71,20 +71,28 @@ class AnthropicProvider:
     (retry once with honest context, then escalate to the human).
     """
 
-    def __init__(self, client: Any | None = None, api_key_env: str | None = None) -> None:
+    def __init__(self, client: Any | None = None, api_key_env: str | None = None,
+                 allowed_models: list[str] | None = None, effort: str | None = None) -> None:
         if client is None:
             import anthropic  # lazy: only needed when this provider is used
             key = os.environ.get(api_key_env) if api_key_env else None
             client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
         self.client = client
+        self.allowed_models = list(allowed_models or [])      # empty: any model the key can use
+        self.effort = effort                                  # e.g. "medium" (output_config.effort); None: model default
 
     def complete(self, *, model: str, system: str, messages: list[dict[str, Any]],
                  max_tokens: int = 16000) -> Completion:
         # Prompt caching: an explicit breakpoint after the static system prompt (role, protocol, tool list: identical
         # on every call of an agent) plus top-level automatic caching, which moves a breakpoint to the end of the
         # growing conversation. Workers resend their whole conversation each call, so most input becomes cache reads.
+        if self.allowed_models and model not in self.allowed_models:
+            # the account owner limited what this key may run: never spend it on another model
+            raise ModelUnavailable(f"{model} is not allowed on this Anthropic key (allowed: {self.allowed_models})")
         kwargs: dict[str, Any] = {"model": model, "max_tokens": max_tokens, "messages": messages,
                                   "cache_control": {"type": "ephemeral"}}
+        if self.effort:
+            kwargs["output_config"] = {"effort": self.effort}
         if system:
             kwargs["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
         try:
@@ -425,7 +433,9 @@ def build_provider(cfg: dict[str, Any]) -> RoutingProvider:
     for name, spec in pcfg.items():
         kind = provider_kind(name, spec)
         if kind == "anthropic":
-            factories[name] = lambda s=spec: AnthropicProvider(api_key_env=s.get("api_key_env"))
+            factories[name] = lambda s=spec: AnthropicProvider(api_key_env=s.get("api_key_env"),
+                                                               allowed_models=s.get("allowed_models"),
+                                                               effort=s.get("effort"))
         elif kind == "cli":
             factories[name] = lambda s=spec: CliProvider(
                 preset=s.get("preset"), command=s.get("command"), input=s.get("input", "stdin"),
