@@ -98,7 +98,7 @@ def test_config_defaults_and_chain(tmp_path):
     f.write_text("models:\n  worker: {provider: anthropic, model: w}\n  fallback_chain: [{model: old}]\n")
     cfg = load_config(f)
     assert model_chain(cfg, "worker") == ["w", "old"]
-    assert cfg["models"]["top"]["model"]            # defaults preserved by merge
+    assert cfg["models"]["director"]["model"]            # defaults preserved by merge
 
 
 def test_guarded_provider_pause_and_budget(store, tmp_path):

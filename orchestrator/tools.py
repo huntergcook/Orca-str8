@@ -3,7 +3,7 @@
 Anti-reinvention rule: check the registry, then open source, then build.
 
   search_registry   (every worker)   find tools we already have
-  request_tool      (every worker)   file a ticket to Tooling, top manager copied
+  request_tool      (every worker)   file a ticket to Tooling, director copied
   search_github     (Tooling only)   find open-source candidates
   acquire_git       (Tooling only)   shallow-clone a repo into tools/vendor/<name> and register it
   register_tool     (Tooling only)   record a tool we wrote or a vendored one
@@ -115,7 +115,7 @@ class ToolBox:
                  run_cmd: Callable[..., tuple[int, str, str]] = _default_run,
                  read_roots: list[str] | None = None, departments: dict[str, str] | None = None,
                  approve_requests: bool = False) -> None:
-        self.approve_requests = approve_requests     # cross-department requests wait for the top manager
+        self.approve_requests = approve_requests     # cross-department requests wait for the director
         self.workspace = Path(workspace)
         self.departments = dict(departments or {})      # department name -> its manager, for request_work
         self.read_roots = [Path(r).expanduser().resolve() for r in (read_roots or [])]
@@ -132,7 +132,7 @@ class ToolBox:
                  "- request_tool {title, need, acceptance_criteria?}: ask the Tooling department for a tool."]
         if self.departments:
             lines.append("- request_work {department, title, need, deliver?}: file work for another department ("
-                         + ", ".join(sorted(self.departments)) + "). It runs in parallel and the top manager sees it. Use it "
+                         + ", ".join(sorted(self.departments)) + "). It runs in parallel and the director sees it. Use it "
                          "when you find work that should be done and is not part of your ticket: speak up.")
         lines += ["- read_file {path} / write_file {path, content}: files inside the workspace (relative paths).",
                   "- run_python {script, args?, timeout?}: run a workspace Python script now (tool venv if present) and get its output.",
@@ -186,16 +186,16 @@ class ToolBox:
         if dept not in self.departments:
             raise ToolError(f"unknown department {dept!r}; choose from {sorted(self.departments)}")
         t = self.store.create_ticket({
-            "title": str(a["title"])[:200], "assignee": self.departments[dept], "worker_role": "worker", "cc": ["top_manager"],
+            "title": str(a["title"])[:200], "assignee": self.departments[dept], "worker_role": "worker", "cc": ["director"],
             "context": f"Requested by {self.actor} (while working on ticket {self.ticket_id}): {a['need']}",
             "acceptance_criteria": a.get("acceptance_criteria") or ["the requester's need is met"],
             "return_spec": {"format": "summary", "description": str(a.get("deliver") or "what was done and where to find it")},
             "rigor": a.get("rigor", "balanced")}, actor=self.actor)
         if self.approve_requests:
             self.store.escalate(t["id"], self.actor, f"proposed by {self.actor} for the {dept} department: approve with "
-                                "retry, or decline with cancel", kind="proposal", to="top_manager")
+                                "retry, or decline with cancel", kind="proposal", to="director")
             return {"ticket_id": t["id"], "department": dept,
-                    "note": "proposed: it starts when the top manager approves it; carry on with your own work"}
+                    "note": "proposed: it starts when the director approves it; carry on with your own work"}
         return {"ticket_id": t["id"], "department": dept,
                 "note": "it runs in parallel and is not part of your ticket: carry on with your own work"}
 
@@ -205,7 +205,7 @@ class ToolBox:
         existing = self.registry.search(f"{a.get('title', '')} {a.get('need', '')}", limit=3)
         t = self.store.create_ticket({
             "title": str(a["title"]), "assignee": self.tooling_assignee, "worker_role": "tool_scout",
-            "cc": ["top_manager"], "context": str(a["need"]),
+            "cc": ["director"], "context": str(a["need"]),
             "acceptance_criteria": a.get("acceptance_criteria") or ["tool is registered and its usage is documented"],
             "return_spec": {"format": "registry entry", "description": "name of the registered tool and how to use it"},
         }, actor=self.actor)

@@ -94,7 +94,7 @@ def test_request_tool_files_ticket_to_tooling_with_top_cc(store, tmp_path):
     box = ToolBox(tmp_path, "worker:exp", can_acquire=False, store=store)
     res = box.call("request_tool", {"title": "need plotter for sweep data", "need": "plot sweep results"})
     t = store.get_ticket(res["ticket_id"])
-    assert t["assignee"] == "tooling_manager" and t["cc"] == ["top_manager"] and t["created_by"] == "worker:exp"
+    assert t["assignee"] == "tooling_manager" and t["cc"] == ["director"] and t["created_by"] == "worker:exp"
     assert res["possibly_relevant_existing"][0]["name"] == "plotter"
 
 

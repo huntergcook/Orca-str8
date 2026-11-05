@@ -8,7 +8,7 @@ A code ticket carries a `code` spec:
 
 The worker edits files in its own worktree (branch ticket/<id>) with a small tool set. When it says it is done,
 the orchestrator commits, runs the gates and, if any fail, gives the failures back to the SAME conversation to fix.
-A passing branch is NOT merged: a human or the top manager reviews it (`ctl code show`) and accepts or rejects it.
+A passing branch is NOT merged: a human or the director reviews it (`ctl code show`) and accepts or rejects it.
 """
 from __future__ import annotations
 

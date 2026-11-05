@@ -57,8 +57,8 @@ def build_state(db_path: str | Path, cfg: dict[str, Any], event_limit: int = 40)
                     "detail": next((q["question"] for q in t["questions"] if "answer" not in q), ""),
                     "why": why(t["id"]), "kind": (t.get("escalation") or {}).get("kind", "")}
 
-        # Only what reached the human: safety/refusals by policy, or handed off by the top manager.
-        # Everything else is still being handled by a manager or the top manager.
+        # Only what reached the human: safety/refusals by policy, or handed off by the director.
+        # Everything else is still being handled by a manager or the director.
         attention = [item(t) for t in tickets if actions.route_of(t)]
         needs_human = [i for i in attention if i["route"] == "human"]
         handling = [i for i in attention if i["route"] != "human"]
@@ -166,7 +166,7 @@ def seed_demo(db_path: str | Path) -> None:
     base = dict(worker_role="w", context="c", acceptance_criteria=["a"],
                 return_spec={"format": "f", "description": "d"})
     done = st.create_ticket({**base, "title": "Survey serial libraries", "assignee": "research_manager",
-                             "rigor": "quick_and_dirty"}, "top_manager")
+                             "rigor": "quick_and_dirty"}, "director")
     st.transition(done["id"], "in_progress", "research_manager")
     w1 = st.create_ticket({**base, "title": "Read pyserial docs", "assignee": "worker:surveyor-1"},
                           "research_manager", parent_id=done["id"])
@@ -187,13 +187,13 @@ def seed_demo(db_path: str | Path) -> None:
     st.transition(w4["id"], "in_progress", "worker:tool_scout-3")
     st.transition(w4["id"], "done", "worker:tool_scout-3", result={"pick": "pyserial-asyncio"})
     risky = st.create_ticket({**base, "title": "Sweep heater power", "assignee": "experiment_manager",
-                              "rigor": "rigorous"}, "top_manager")
+                              "rigor": "rigorous"}, "director")
     st.transition(risky["id"], "in_progress", "experiment_manager")
     st.escalate(risky["id"], "experiment_manager", "temperature rising faster than expected", kind="safety")
-    q = st.create_ticket({**base, "title": "Pick sampling rate", "assignee": "research_manager"}, "top_manager")
+    q = st.create_ticket({**base, "title": "Pick sampling rate", "assignee": "research_manager"}, "director")
     st.transition(q["id"], "in_progress", "research_manager")
     st.ask_question(q["id"], "research_manager", "What sampling rate does the sensor support?")
-    st.handoff(q["id"], "top_manager", "I do not know the sensor's rate; only you do")
+    st.handoff(q["id"], "director", "I do not know the sensor's rate; only you do")
     stuck = st.create_ticket({**base, "title": "Read mpremote docs", "assignee": "worker:tool_scout-4",
                               "worker_role": "tool_scout"}, "tooling_manager", parent_id=tool["id"])
     st.transition(stuck["id"], "in_progress", "worker:tool_scout-4")

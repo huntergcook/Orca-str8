@@ -1,5 +1,5 @@
-from orchestrator.top import TopManager
+from orchestrator.director import Director
 
 
 def test_top_has_keepalive_and_watchdog():
-    assert hasattr(TopManager, "_heartbeats") and hasattr(TopManager, "_watchdog")
+    assert hasattr(Director, "_heartbeats") and hasattr(Director, "_watchdog")

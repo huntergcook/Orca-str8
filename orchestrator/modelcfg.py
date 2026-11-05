@@ -16,7 +16,7 @@ import yaml
 from .config import load_config, overlay_path, qualify
 from .providers import CLI_PRESETS, provider_kind
 
-TIERS = ("manager", "worker", "verifier", "top")
+TIERS = ("manager", "worker", "verifier", "director")
 DEFAULT_TIERS = ("manager", "worker", "verifier")
 
 
@@ -53,7 +53,7 @@ def detect(env: dict[str, str] | None = None, which: Callable[[str], str | None]
 
 def current(cfg: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for tier in ("top", "manager", "worker"):
+    for tier in ("director", "manager", "worker"):
         s = cfg["models"][tier]
         out[tier] = {"provider": s.get("provider"), "model": s["model"], "id": qualify(cfg, s.get("provider"), s["model"])}
     out["fallback_chain"] = cfg["models"].get("fallback_chain") or []
@@ -78,6 +78,7 @@ def _write_overlay(config_path: str | Path, data: dict[str, Any]) -> Path:
 def set_models(config_path: str | Path, tiers: list[str], provider: str, model: str,
                fallback: list[str] | None = None, clear_fallback: bool = False) -> dict[str, Any]:
     """Point the given tiers at provider/model. 'verifier' sets verification.verifier_models."""
+    tiers = ["director" if t == "top" else t for t in tiers]      # `top` is the director's old tier name
     bad = [t for t in tiers if t not in TIERS]
     if bad:
         raise ValueError(f"unknown tier(s) {bad}; choose from {list(TIERS)}")
@@ -108,7 +109,7 @@ def set_models(config_path: str | Path, tiers: list[str], provider: str, model: 
 def use_cli(config_path: str | Path, cli: str, model: str = "default",
             tiers: list[str] | None = None) -> dict[str, Any]:
     """Run the given tiers (default: manager, worker, verifier) on one CLI with one model: for example
-    `use-cli codex` makes every worker the same Codex model you use as the top manager. model='default'
+    `use-cli codex` makes every worker the same Codex model you use as the director. model='default'
     passes no model flag, so the CLI uses whatever it is normally set to. Fallback models from other
     providers are cleared, since they may not be accessible without API keys."""
     if cli not in CLI_PRESETS:

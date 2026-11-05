@@ -446,7 +446,7 @@ def build_provider(cfg: dict[str, Any]) -> RoutingProvider:
                 max_output_tokens=s.get("max_output_tokens", 32000), require_key=s.get("require_key", True))
     model_provider: dict[str, str] = {}
     models = cfg.get("models", {})
-    for tier in ("top", "manager", "worker"):
+    for tier in ("director", "manager", "worker"):
         spec = models.get(tier) or {}
         if spec.get("model") and spec.get("provider"):
             model_provider[spec["model"]] = spec["provider"]

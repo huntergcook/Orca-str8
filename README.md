@@ -68,15 +68,15 @@ python -m orchestrator.smoke                       # proves every configured mod
 python -m orchestrator.dashboard --project ~/my-project --open       # http://127.0.0.1:8080
 ```
 
-**6. Start your agent in the project folder and tell it what you want.** It becomes the top manager:
+**6. Start your agent in the project folder and tell it what you want.** It becomes the director:
 
 | Your agent | How to start |
 |---|---|
 | **Claude Code** | `cd ~/my-project && claude`, then `/orchestrate compare the serial libraries for microcontrollers and recommend one` |
-| **Codex** | `cd ~/my-project && codex`, then *"Act as the orchestrator top manager: compare the serial libraries..."* (it reads `AGENTS.md`) |
+| **Codex** | `cd ~/my-project && codex`, then *"Act as the orchestrator director: compare the serial libraries..."* (it reads `AGENTS.md`) |
 | **Any other agent** that can run shell commands | Tell it to read `AGENTS.md` in the project and follow it |
 
-**7. What happens next.** The top manager reads the project state, detects what models you can use, and asks you about
+**7. What happens next.** The director reads the project state, detects what models you can use, and asks you about
 the goal, when to stop, and how rigorous to be (quick-and-dirty, balanced, rigorous). It then creates tickets, runs the
 department managers in the background, and **tells you the moment something needs a decision**. You can answer in the
 chat or in the dashboard. When the stopping criteria are met it reports back and finishes.
@@ -89,7 +89,7 @@ folder and say the same thing; it resumes where the project left off.
 ## How it works
 
 ```
-  You  <->  Top manager  (your agent: Claude Code / Codex / ...; the only one who talks to you)
+  You  <->  Director  (your agent: Claude Code / Codex / ...; the only one who talks to you)
               |   python -m orchestrator.ctl   (JSON commands: create tickets, run, watch, answer, ...)
               v
         Department managers   research | tooling | experiment | verification | your own
@@ -98,7 +98,7 @@ folder and say the same thing; it resumes where the project left off.
         Workers   (short-lived, one narrow ticket each)  ->  tools, files, background jobs
 ```
 
-**Top manager.** Your agent. It owns the goal, works out the stopping criteria *with you*, asks how much rigor the goal
+**Director.** Your agent. It owns the goal, works out the stopping criteria *with you*, asks how much rigor the goal
 deserves, delegates, reviews results critically, and relays anything that needs you. It keeps no memory of its own:
 every decision goes into durable notes, so a fresh session can take over.
 
@@ -111,14 +111,14 @@ understanding from notes and the ticket tree each time, so they survive restarts
 | **Research** | Theory, surveys, papers; decides technical direction from results |
 | **Tooling** | Builds and finds reusable tools. Checks its registry first, then searches open source (GitHub, PyPI), and only then builds. The only department allowed to acquire external code |
 | **Experiment** | Runs experiments: claims hardware, runs long sweeps as background jobs, watches them and fixes failures. Off by default; enable it for hardware work |
-| **Software** | Changes code. Its **manager owns the repository** like a tech lead: engineers each edit their own git worktree and branch; after automatic gates the manager reviews each branch (summary, open questions, diff), fixes small things itself, and **integrates** good work into an integration branch or sends it back with feedback. Your main branch only changes when the top manager (or you) **releases** the integration branch (`ctl code release`) |
+| **Software** | Changes code. Its **manager owns the repository** like a tech lead: engineers each edit their own git worktree and branch; after automatic gates the manager reviews each branch (summary, open questions, diff), fixes small things itself, and **integrates** good work into an integration branch or sends it back with feedback. Your main branch only changes when the director (or you) **releases** the integration branch (`ctl code release`) |
 | **Verification** | Independent, strict, *advisory* checks of results against the real goal, on different models for diversity. It also reads each patch (the diff) and the project rules |
 
 You can add departments (see [Customize](#customize-it)).
 
-**Changing code (the Software department).** Code tickets carry a `code` spec: `allowed_paths` (narrow globs), `acceptance` (shell commands that must pass) and `context_files`. Before any worker starts, every acceptance command is run once in a throwaway checkout: one that cannot run as written (program not found, a missing script, a usage error) sends the delegation back to the manager, so nobody burns retries on a check that can never pass. The worker edits its own git worktree with a small tool set (list, read, search, `edit_file`, `write_file`, `run_tests`, `run_command`). When it says done, the orchestrator commits (build output is never committed) and runs the gates: secret scan, the acceptance commands, and a scope check that flags files changed outside `allowed_paths` for review. A failing gate goes back into the *same* conversation. The Software manager reviews each passing branch (summary, open questions, scope notes, diff), fixes small things itself, and integrates it into the integration branch, where `integration_checks` run after every merge (a merge that breaks them is undone). Your main branch changes only on `ctl code release`. The top manager can write exact worker tickets (`worker_tickets`), so ticket quality stays with the strongest model while cheap models write the code. Acceptance commands can be anything your machine can run, including C++ builds; things only a person can check (a headset, how it feels) go to you as a checklist.
+**Changing code (the Software department).** Code tickets carry a `code` spec: `allowed_paths` (narrow globs), `acceptance` (shell commands that must pass) and `context_files`. Before any worker starts, every acceptance command is run once in a throwaway checkout: one that cannot run as written (program not found, a missing script, a usage error) sends the delegation back to the manager, so nobody burns retries on a check that can never pass. The worker edits its own git worktree with a small tool set (list, read, search, `edit_file`, `write_file`, `run_tests`, `run_command`). When it says done, the orchestrator commits (build output is never committed) and runs the gates: secret scan, the acceptance commands, and a scope check that flags files changed outside `allowed_paths` for review. A failing gate goes back into the *same* conversation. The Software manager reviews each passing branch (summary, open questions, scope notes, diff), fixes small things itself, and integrates it into the integration branch, where `integration_checks` run after every merge (a merge that breaks them is undone). Your main branch changes only on `ctl code release`. The director can write exact worker tickets (`worker_tickets`), so ticket quality stays with the strongest model while cheap models write the code. Acceptance commands can be anything your machine can run, including C++ builds; things only a person can check (a headset, how it feels) go to you as a checklist.
 
-**A team that works in parallel.** Every department's tickets run at the same time, and inside a department every runnable worker runs at once (capped by `max_parallel_workers`, with `max_concurrent_calls` protecting the provider's rate limits). Managers react as results arrive: they answer questions and review finished branches while slower workers are still going, so nobody waits on the slowest. Managers have their own tools and full authority to fix what a worker could not. Any agent can file work for another department (`request_work`), and workers report work they noticed in `follow_ups`; managers pass the rest up so the top manager can keep a project-wide list with no holes.
+**A team that works in parallel.** Every department's tickets run at the same time, and inside a department every runnable worker runs at once (capped by `max_parallel_workers`, with `max_concurrent_calls` protecting the provider's rate limits). Managers react as results arrive: they answer questions and review finished branches while slower workers are still going, so nobody waits on the slowest. Managers have their own tools and full authority to fix what a worker could not. Any agent can file work for another department (`request_work`), and workers report work they noticed in `follow_ups`; managers pass the rest up so the director can keep a project-wide list with no holes.
 
 **Workers.** One ticket each, small context, then gone. They can read and write files inside the workspace, run Python,
 search the tool registry, and file tool requests; Tooling workers can also fetch code, and Experiment workers can claim
@@ -128,7 +128,7 @@ hardware and run jobs. Workers are numbered per role (`surveyor-1`, `surveyor-2`
 acceptance criteria, the *rigor* level, and a return spec saying exactly what comes back. Workers can ask upward for
 clarification, and tickets can be split and delegated.
 
-**Rigor** (`quick_and_dirty`, `balanced`, `rigorous`) is set per goal by the top manager after asking you. Workers match
+**Rigor** (`quick_and_dirty`, `balanced`, `rigorous`) is set per goal by the director after asking you. Workers match
 their effort to it, and verification judges against that bar, so a quick prototype is not gold-plated and a critical
 result is not waved through.
 
@@ -138,12 +138,12 @@ to the manager, who must weigh it heavily but keeps the final say; overriding it
 
 **Escalations climb a chain and each level must try first.** Worker problems go to the department manager, who sees why
 the worker failed (reason, a sample of its bad reply, retries used) and can retry it with guidance on a fallback model,
-delegate differently, or accept the gap. Only what a manager cannot resolve reaches the top manager; only what the top
+delegate differently, or accept the gap. Only what a manager cannot resolve reaches the director; only what the top
 manager cannot resolve reaches you. **Safety issues and model refusals go straight to you** by policy, and nothing below
 you may route around a refusal. Small protocol slips (a tool name sent as the action) are corrected instead of escalated,
 and a model that runs out of quota (a CLI subscription limit, no API balance) is skipped for the rest of the run instead of
 failing tickets. Cancelling a ticket stops the work below it at the next model call. With
-`policies.approve_cross_department_work`, work one department asks of another waits as a **proposal** for the top manager.
+`policies.approve_cross_department_work`, work one department asks of another waits as a **proposal** for the director.
 
 **Memory and recovery.** State lives in a SQLite database (fully synced) and atomically written files. After a crash or
 power cut, `resume` reports what was interrupted, `recover` clears stale locks and marks dead jobs lost, and unfinished
@@ -153,7 +153,7 @@ by a ticket that finished or was cancelled is released as soon as none of its jo
 for this).
 
 **Models.** Each role can run on a different backend (below). Stronger models usually belong higher up. If a worker's
-reply fails, it falls through your fallback chain; each manager retry moves further along it. The top manager can also
+reply fails, it falls through your fallback chain; each manager retry moves further along it. The director can also
 choose models for one ticket and everything below it (`ctl set-models`), e.g. the cheap model by default and a stronger
 one only for a ticket that keeps failing.
 
@@ -184,7 +184,7 @@ python -m orchestrator.ctl models set --tiers worker --provider deepseek --model
        --fallback deepseek:deepseek-v4-pro
 ```
 
-- **"Every worker is the same model as my top manager":** `use-cli <the CLI you use>` with no `--model`. No model flag is
+- **"Every worker is the same model as my director":** `use-cli <the CLI you use>` with no `--model`. No model flag is
   passed, so each role runs whatever that CLI is normally set to. Add `--model NAME` to pin one, `--tiers worker,verifier`
   to change only some roles. Your agent can do this for you: its instructions tell it to detect what you have, ask, and
   apply it.
@@ -210,14 +210,14 @@ Run these from your project folder (or add `--project PATH`). Your agent runs mo
 | `ctl run` | Run the department managers (long; run it in the background) |
 | `ctl watch` | Block until something needs attention or work finishes, then return |
 | `ctl answer ID "text"` / `ctl retry ID ["guidance"]` / `ctl cancel ID` | Resolve what needs attention; cancel also stops running work and everything below it |
-| `ctl handoff ID "why"` | The top manager could not resolve it; put it in front of the human |
+| `ctl handoff ID "why"` | The director could not resolve it; put it in front of the human |
 | `ctl state --set` / `ctl log "..."` / `ctl human "..."` | Durable notes: plan, journal, and everything you said |
 | `ctl recover` / `ctl release-resource NAME "..."` | Recover after a crash; free hardware after you checked it |
 | `ctl add-resource NAME "when safe to stop"` / `ctl safe-to-stop NAME "..."` | Declare hardware for the Experiment department |
 | `ctl code integration` / `release` / `sync` | See what the Software manager integrated, release it into your main branch, or bring main's new commits into integration |
-| `ctl code list` / `show ID` / `accept ID` / `reject ID "feedback"` / `discard ID` | Review branches yourself (when `code.review: top_manager`, or to override) |
+| `ctl code list` / `show ID` / `accept ID` / `reject ID "feedback"` / `discard ID` | Review branches yourself (when `code.review: director`, or to override) |
 | `ctl models ...` | See and choose models (above) |
-| `ctl set-models ID --manager M --worker M` | The top manager picks models for one ticket and its subtree (e.g. cheap by default, stronger for a hard or failing ticket); `default` clears |
+| `ctl set-models ID --manager M --worker M` | The director picks models for one ticket and its subtree (e.g. cheap by default, stronger for a hard or failing ticket); `default` clears |
 | `ctl balance` | Real account balances from providers that report one (DeepSeek), next to the estimated spend |
 | `ctl pause` / `ctl unpause` | Halt or resume all model calls (also: create a file `workspace/PAUSE`) |
 | `ctl finish "summary"` | Mark the project done |
@@ -237,14 +237,14 @@ Run these from your project folder (or add `--project PATH`). Your agent runs mo
 | `departments` | Which departments exist: `manager_role`, `mission`, `can_acquire_tools`, `resource_leases` (hardware), `diverse_models` |
 | `verification` | `enabled`, `verifier_models`, `max_rounds` |
 | `budget` | `max_tokens`, `max_minutes` (per run) and (with `prices`) `max_cost_usd` are enforced. `stop_below_balance_usd` halts model calls when a provider's **real** balance drops below it (re-read every `balance_check_seconds`, default 60): the most accurate limit when your provider reports a balance |
-| `policies` | `max_parallel_tickets`, `max_parallel_workers`, `max_concurrent_calls`, `max_tool_steps`, `max_manager_tool_steps`, `max_manager_rounds`, `capability_retry_limit`, `max_worker_retries`, `max_children_per_agent`, `default_rigor`, `approve_cross_department_work` (cross-department requests wait for the top manager; use it on a tight budget) |
-| `code` | `review` (`manager` or `top_manager`), `integration_branch`, `integration_checks` (run after every merge; a breaking merge is undone), `test_timeout`, `gates`, `preflight` / `preflight_timeout` (acceptance commands are checked before workers start; default on, 60 s) |
+| `policies` | `max_parallel_tickets`, `max_parallel_workers`, `max_concurrent_calls`, `max_tool_steps`, `max_manager_tool_steps`, `max_manager_rounds`, `capability_retry_limit`, `max_worker_retries`, `max_children_per_agent`, `default_rigor`, `approve_cross_department_work` (cross-department requests wait for the director; use it on a tight budget) |
+| `code` | `review` (`manager` or `director`), `integration_branch`, `integration_checks` (run after every merge; a breaking merge is undone), `test_timeout`, `gates`, `preflight` / `preflight_timeout` (acceptance commands are checked before workers start; default on, 60 s) |
 | `prices` | Optional `{model: {input, output, cache_hit, off_peak}}` in $ per million tokens; enables cost estimates and `budget.max_cost_usd`. `off_peak` is a multiplier (0.5) or its own rate table, applied to calls inside `price_off_peak_utc: ["16:30", "00:30"]` |
 | `read_roots` | Folders agents may **read** (never write), by absolute path, e.g. your existing code repo. `.env`, keys and credential files are always blocked. Output still goes to `workspace/` |
 | `rules_file` | A file of mandatory project rules (legal, safety, house rules) injected into **every** manager, worker and verifier prompt; verification fails work that breaks them |
 
 - **Hardware work:** uncomment the `experiment` department, declare each device (`ctl add-resource`), then describe the
-  rig to your top manager. Agents run Python scripts and background jobs on your machine to drive it.
+  rig to your director. Agents run Python scripts and background jobs on your machine to drive it.
 - **Roles are plain markdown prompts.** Put your own in `<project>/roles/` and they override the built-in ones in this
   repo's `roles/`: a manager role (`roles/gamedev_manager.md`, referenced from `departments.<name>.manager_role`) or a
   worker role (`roles/workers/<name>.md`, named by tickets' `worker_role`). A department with no file uses a generic
@@ -270,7 +270,7 @@ Read this before pointing it at anything that matters.
   CLI backends report no real usage numbers. Parallel work spends faster; verification multiplies model calls.
 - **One run at a time per project** (enforced with a lock).
 - **Workers cannot spawn sub-workers yet** (`max_subworker_depth` is declared but unused).
-- **It is only as good as your agents.** The top manager follows written instructions; weaker agents may follow them less
+- **It is only as good as your agents.** The director follows written instructions; weaker agents may follow them less
   faithfully. Models sometimes return malformed replies; there are retries and fallbacks, and failures are logged and
   escalated, not hidden.
 - Windows is the tested platform.
@@ -289,7 +289,7 @@ Read this before pointing it at anything that matters.
   in the history since then came from what that run exposed. The Claude CLI backend (Haiku) ran there too, until it hit
   the subscription's limit, which is how quota skipping came about.
 - **Not yet live:** the Codex preset (built from OpenAI's CLI reference, never run on a real Codex), real hardware other
-  than a PC, macOS/Linux. A built-in chat top manager (`python -m orchestrator`, for when you have no interactive agent)
+  than a PC, macOS/Linux. A built-in chat director (`python -m orchestrator`, for when you have no interactive agent)
   exists but is the least-tested path.
 
 ---
@@ -298,7 +298,7 @@ Read this before pointing it at anything that matters.
 
 ```
 orchestrator/     the runtime (see below)
-roles/            built-in role prompts (top manager, department managers, workers)
+roles/            built-in role prompts (director, department managers, workers)
 schemas/          ticket.schema.json
 config/           orchestrator.example.yaml (every setting, commented)
 tests/            the test suite
@@ -315,10 +315,10 @@ DESIGN.md         the design in depth
 | `hardware.py` | Background jobs and the live hardware status |
 | `providers.py` | Claude API, OpenAI-compatible (DeepSeek, OpenAI, Ollama), CLI backends, routing |
 | `modelcfg.py` | Detect and choose models |
-| `ctl.py`, `actions.py` | The control interface for the top manager; shared answer/retry/cancel/handoff |
+| `ctl.py`, `actions.py` | The control interface for the director; shared answer/retry/cancel/handoff |
 | `dashboard.py` | The web dashboard |
 | `init.py`, `smoke.py` | Project scaffold; pre-flight check |
-| `memory.py`, `limits.py`, `util.py`, `config.py`, `top.py` | Notes, budgets/pause, durable I/O, config, the built-in top manager |
+| `memory.py`, `limits.py`, `util.py`, `config.py`, `director.py` | Notes, budgets/pause, durable I/O, config, the built-in director |
 
 ## Development
 

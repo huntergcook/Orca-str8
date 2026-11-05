@@ -1,4 +1,4 @@
-"""Escalations climb worker -> manager -> top manager -> human; only unresolvable items reach the human."""
+"""Escalations climb worker -> manager -> director -> human; only unresolvable items reach the human."""
 import json
 
 import pytest
@@ -34,22 +34,22 @@ def mk_manager(store, tmp_path, script, worker_models=("flash", "pro")):
 
 
 def top_ticket(store):
-    return store.create_ticket({**BASE, "title": "Top", "assignee": "research_manager"}, "top_manager")["id"]
+    return store.create_ticket({**BASE, "title": "Top", "assignee": "research_manager"}, "director")["id"]
 
 
 # ------------------------------------------------------------------ routing
 
 def test_routing_rules(store):
-    top = store.create_ticket({**BASE, "title": "t", "assignee": "m"}, "top_manager")
+    top = store.create_ticket({**BASE, "title": "t", "assignee": "m"}, "director")
     kid = store.create_ticket({**BASE, "title": "k", "assignee": "w"}, "m", parent_id=top["id"])
     assert route_for(kid, "blocked") == "manager" and route_for(kid, "technical") == "manager"
-    assert route_for(top, "blocked") == "top_manager" and route_for(top, "technical") == "top_manager"
+    assert route_for(top, "blocked") == "director" and route_for(top, "technical") == "director"
     assert route_for(kid, "safety") == "human" and route_for(kid, "refusal") == "human"
     assert route_for(top, "safety") == "human"
 
 
 def test_escalate_records_route_and_clears_when_resumed(store):
-    top = store.create_ticket({**BASE, "title": "t", "assignee": "m"}, "top_manager")["id"]
+    top = store.create_ticket({**BASE, "title": "t", "assignee": "m"}, "director")["id"]
     kid = store.create_ticket({**BASE, "title": "k", "assignee": "w"}, "m", parent_id=top)["id"]
     store.transition(kid, "in_progress", "w")
     t = store.escalate(kid, "w", "stuck", kind="blocked")
@@ -61,25 +61,25 @@ def test_escalate_records_route_and_clears_when_resumed(store):
 
 
 def test_legacy_escalations_without_a_record_are_routed_by_level(store):
-    top = store.create_ticket({**BASE, "title": "t", "assignee": "m"}, "top_manager")["id"]
+    top = store.create_ticket({**BASE, "title": "t", "assignee": "m"}, "director")["id"]
     kid = store.create_ticket({**BASE, "title": "k", "assignee": "w"}, "m", parent_id=top)["id"]
     for tid in (top, kid):
         store.transition(tid, "in_progress", "x")
         store.transition(tid, "escalated", "x", note="old style")          # no escalation record
     assert actions.route_of(store.get_ticket(kid)) == "manager"
-    assert actions.route_of(store.get_ticket(top)) == "top_manager"
+    assert actions.route_of(store.get_ticket(top)) == "director"
 
 
 def test_handoff_puts_it_in_front_of_the_human_with_the_reason(store):
-    t = store.create_ticket({**BASE, "title": "t", "assignee": "m"}, "top_manager")["id"]
+    t = store.create_ticket({**BASE, "title": "t", "assignee": "m"}, "director")["id"]
     store.transition(t, "in_progress", "m")
     with pytest.raises(Exception, match="nothing to hand off"):
-        store.handoff(t, "top_manager")
+        store.handoff(t, "director")
     store.escalate(t, "m", "cannot find the sensor spec", kind="blocked")
-    assert actions.route_of(store.get_ticket(t)) == "top_manager"
-    actions.handoff(store, t, "need the datasheet from you", "top_manager")
+    assert actions.route_of(store.get_ticket(t)) == "director"
+    actions.handoff(store, t, "need the datasheet from you", "director")
     got = store.get_ticket(t)
-    assert actions.route_of(got) == "human" and got["escalation"]["handed_off_by"] == "top_manager"
+    assert actions.route_of(got) == "human" and got["escalation"]["handed_off_by"] == "director"
     assert actions.why_from_events(store.events(t)) == "need the datasheet from you"
 
 
@@ -140,7 +140,7 @@ def test_retry_limit_is_enforced_and_manager_must_choose_something_else(store, t
     assert applied == 0 and "not one of your workers" in errors[0]
 
 
-def test_worker_problems_never_reach_the_top_manager_or_human_while_the_manager_handles_them(tmp_path):
+def test_worker_problems_never_reach_the_director_or_human_while_the_manager_handles_them(tmp_path):
     cfg = load_config(None)
     cfg["departments"] = {"research": {}}
     ctl = Ctl(cfg, tmp_path, MockProvider([
@@ -149,9 +149,9 @@ def test_worker_problems_never_reach_the_top_manager_or_human_while_the_manager_
     ]))
     ctl.create(SPEC)
     out = ctl.run()                                                  # script ends at the manager's review -> crash
-    # the manager's own call failed (mock exhausted), so the *parent* escalates to the top manager (technical)
+    # the manager's own call failed (mock exhausted), so the *parent* escalates to the director (technical)
     routes = {a["level"]: a["route"] for a in out["needs_attention"]}
-    assert routes == {"top": "top_manager"}
+    assert routes == {"top": "director"}
     assert out["managers_handling"] and out["managers_handling"][0]["why"]    # worker's issue stays below
     ctl.close()
 
@@ -194,13 +194,13 @@ def test_manager_settling_its_ticket_closes_out_escalated_workers(store, tmp_pat
     assert actions.route_of(kid) is None
 
 
-def test_top_manager_can_handle_or_hand_off(tmp_path):
+def test_director_can_handle_or_hand_off(tmp_path):
     cfg = load_config(None)
     cfg["departments"] = {"research": {}}
     ctl = Ctl(cfg, tmp_path, MockProvider([j(action="escalate", kind="blocked", reason="manager is stuck")]))
     tid = ctl.create(SPEC)["ticket_id"]
     out = ctl.run()
-    assert [(a["id"], a["route"]) for a in out["needs_attention"]] == [(tid, "top_manager")]
+    assert [(a["id"], a["route"]) for a in out["needs_attention"]] == [(tid, "director")]
     ctl.handoff(tid, "I cannot fix this; need your decision")
     again = ctl.board()["needs_attention"]
     assert again[0]["route"] == "human" and "need your decision" in again[0]["why"]
@@ -210,12 +210,12 @@ def test_top_manager_can_handle_or_hand_off(tmp_path):
 def test_dashboard_shows_only_human_level_items_plus_a_handling_list(store, tmp_path):
     from fastapi.testclient import TestClient
     from orchestrator.dashboard import create_app
-    top = store.create_ticket({**BASE, "title": "Top", "assignee": "m"}, "top_manager")["id"]
+    top = store.create_ticket({**BASE, "title": "Top", "assignee": "m"}, "director")["id"]
     store.transition(top, "in_progress", "m")
     kid = store.create_ticket({**BASE, "title": "Kid", "assignee": "w"}, "m", parent_id=top)["id"]
     store.transition(kid, "in_progress", "w")
     store.escalate(kid, "w", "technical trouble", kind="technical")                  # manager's problem
-    unsafe = store.create_ticket({**BASE, "title": "Unsafe", "assignee": "m"}, "top_manager")["id"]
+    unsafe = store.create_ticket({**BASE, "title": "Unsafe", "assignee": "m"}, "director")["id"]
     store.transition(unsafe, "in_progress", "m")
     store.escalate(unsafe, "m", "smoke from the rig", kind="safety")                 # the human's problem
     s = TestClient(create_app(tmp_path / "t.db", load_config(None), project=tmp_path),

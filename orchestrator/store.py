@@ -22,16 +22,16 @@ SCHEMA_PATH = Path(__file__).resolve().parents[1] / "schemas" / "ticket.schema.j
 
 TERMINAL = {"done", "failed", "cancelled"}
 
-# Escalation chain: worker -> department manager -> top manager -> human.
+# Escalation chain: worker -> department manager -> director -> human.
 # Safety issues and model refusals are the human's decision by policy, so they skip the chain.
 HUMAN_ONLY_KINDS = {"safety", "refusal"}
 
 
 def route_for(ticket: dict, kind: str = "blocked") -> str:
-    """Who must handle a newly escalated ticket: 'manager', 'top_manager' or 'human'."""
+    """Who must handle a newly escalated ticket: 'manager', 'director' or 'human'."""
     if kind in HUMAN_ONLY_KINDS:
         return "human"
-    return "manager" if ticket.get("parent_id") else "top_manager"
+    return "manager" if ticket.get("parent_id") else "director"
 
 TRANSITIONS: dict[str, set[str]] = {
     "open": {"in_progress", "blocked", "escalated", "cancelled"},
@@ -152,6 +152,21 @@ class Store:
         if "pid_started" not in {r[1] for r in self._conn.execute("PRAGMA table_info(jobs)")}:
             self._conn.execute("ALTER TABLE jobs ADD COLUMN pid_started REAL")     # databases created before this column
         self._validator = jsonschema.Draft202012Validator(json.loads(SCHEMA_PATH.read_text()))
+        self._migrate_director_name()
+
+    def _migrate_director_name(self) -> None:
+        """Databases from before the rename call the director `top_manager`. Rewrite the live tables; the append-only
+        events log keeps its historical actor names (it is an audit record, and the triggers forbid edits)."""
+        c = self._conn
+        if not c.execute("SELECT 1 FROM tickets WHERE assignee='top_manager' OR created_by='top_manager' "
+                         "OR data LIKE '%top_manager%' LIMIT 1").fetchone() and \
+                not c.execute("SELECT 1 FROM agents WHERE name='top_manager' LIMIT 1").fetchone():
+            return
+        with self._tx() as t:
+            t.execute("UPDATE tickets SET assignee='director' WHERE assignee='top_manager'")
+            t.execute("UPDATE tickets SET created_by='director' WHERE created_by='top_manager'")
+            t.execute("UPDATE tickets SET data=REPLACE(data,'top_manager','director') WHERE data LIKE '%top_manager%'")
+            t.execute("UPDATE agents SET name='director' WHERE name='top_manager'")
 
     @property
     def _conn(self) -> sqlite3.Connection:
@@ -431,7 +446,7 @@ class Store:
             return t
 
     def append_context(self, ticket_id: str, actor: str, text: str) -> dict[str, Any]:
-        """Add guidance to a ticket's context (e.g. from the top manager when retrying an escalation)."""
+        """Add guidance to a ticket's context (e.g. from the director when retrying an escalation)."""
         with self._tx() as c:
             t = self._load(c, ticket_id)
             t["context"] = f"{t['context']}\n\n[Guidance from {actor}]: {text}"
@@ -524,7 +539,7 @@ class Store:
                 raise InvalidTransition(f"{ticket_id}: cannot ask from {t['status']}")
             t["questions"].append({"asked_by": asked_by, "question": question})
             t["status"] = "needs_clarification"
-            # a worker's question goes to its manager; a manager's goes to the top manager
+            # a worker's question goes to its manager; a manager's goes to the director
             t["escalation"] = {"to": route_for(t, "question"), "kind": "question", "reason": question}
             self._save(c, t)
             self._event(c, ticket_id, asked_by, "question_asked", {"question": question})

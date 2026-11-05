@@ -107,7 +107,7 @@ def test_manager_hitting_the_worker_cap_gets_feedback_instead_of_crashing(store,
         json.dumps({"action": "done", "result": {"final": "used what we had"}}),            # told to finish instead
     ])
     m = Manager("research_manager", store, p, cfg, tmp_path, "role", ["m"], ["w"])
-    top = store.create_ticket({**ws, "assignee": "research_manager", "worker_role": "worker"}, "top_manager")["id"]
+    top = store.create_ticket({**ws, "assignee": "research_manager", "worker_role": "worker"}, "director")["id"]
     t = m.work(top)
     assert t["status"] == "done" and t["result"] == {"final": "used what we had"}
     final_prompt = p.calls[-1]["messages"][0]["content"]

@@ -14,7 +14,7 @@ from .providers import build_provider
 
 def configured_models(cfg: dict) -> list[str]:
     models: list[str] = []
-    for tier in ("top", "manager", "worker"):
+    for tier in ("director", "manager", "worker"):
         if cfg["models"][tier].get("provider") == "external":   # e.g. Claude Code plays this tier
             continue
         models += model_chain(cfg, tier)

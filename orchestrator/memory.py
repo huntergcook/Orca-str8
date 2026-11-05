@@ -1,9 +1,9 @@
 """File-based agent memory (markdown in the workspace). Managers write their own;
-the top manager can edit anyone's. Layout:
+the director can edit anyone's. Layout:
 
     <workspace>/memory/<agent>/state.md     current state, rewritten as needed
     <workspace>/memory/<agent>/journal.md   append-only timestamped journal
-    <workspace>/memory/human_log.md         top manager's log of human interaction
+    <workspace>/memory/human_log.md         director's log of human interaction
 """
 from __future__ import annotations
 

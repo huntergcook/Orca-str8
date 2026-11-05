@@ -1,6 +1,6 @@
-"""Control interface for an EXTERNAL top manager (e.g. an interactive Claude Code session).
+"""Control interface for an EXTERNAL director (e.g. an interactive Claude Code session).
 
-The external agent plays the top manager and talks to the human; this tool is its hands:
+The external agent plays the director and talks to the human; this tool is its hands:
 it creates tickets, runs the department managers (workers/verifiers run on the configured
 API providers), reads results, answers questions and keeps durable notes. All state is in
 files and SQLite, so a fresh session can resume with `resume`.
@@ -31,7 +31,7 @@ from .modelcfg import DEFAULT_TIERS, current, detect, set_models, use_cli
 from .util import append_durable, atomic_write, process_alive, process_stamp
 from .providers import CLI_PRESETS, Provider, build_provider, requirements
 from .store import Store, StoreError
-from .top import TopManager
+from .director import Director
 
 ORCH_HOME = Path(__file__).resolve().parents[1]
 
@@ -43,10 +43,10 @@ class Ctl:
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.store = Store(self.workspace / "orchestrator.db")
         self.provider = GuardedProvider(provider or build_provider(cfg), self.store, cfg, self.workspace)
-        self.top = TopManager(self.store, self.provider, cfg, self.workspace)
+        self.director = Director(self.store, self.provider, cfg, self.workspace)
 
     def close(self) -> None:
-        for m in getattr(self.top, "managers", {}).values():     # let worker threads finish before the store closes
+        for m in getattr(self.director, "managers", {}).values():     # let worker threads finish before the store closes
             pool = getattr(m, "pool", None)
             if pool is not None:
                 pool.shutdown(wait=True, cancel_futures=True)
@@ -70,9 +70,9 @@ class Ctl:
         return row
 
     def board(self) -> dict[str, Any]:
-        released = actions.release_abandoned_holds(self.store, "top_manager")
+        released = actions.release_abandoned_holds(self.store, "director")
         if released:
-            self.store.add_event(None, "top_manager", "note", {"text": f"released abandoned holds: {released}"})
+            self.store.add_event(None, "director", "note", {"text": f"released abandoned holds: {released}"})
         top_level = [t for t in self.store.list_tickets() if t["parent_id"] is None]
         rows = [self._row(t) for t in top_level]
         attention, handled_below = [], []
@@ -133,11 +133,11 @@ class Ctl:
             return str(h)
 
     def resume(self) -> dict[str, Any]:
-        """Everything a fresh top manager needs to pick up the work."""
+        """Everything a fresh director needs to pick up the work."""
         log = human_log(self.workspace)
-        return {"departments": list(self.top.managers),
-                "state_notes": self.top.memory.read_state() or "(none yet)",
-                "journal_tail": self.top.memory.read_journal(3000),
+        return {"departments": list(self.director.managers),
+                "state_notes": self.director.memory.read_state() or "(none yet)",
+                "journal_tail": self.director.memory.read_journal(3000),
                 "human_log_tail": log.read_text(encoding="utf-8")[-3000:] if log.exists() else "",
                 "hardware": hardware_brief(self.store) or "(none)",
                 "finished": (self.workspace / "FINISHED").exists(),
@@ -147,9 +147,9 @@ class Ctl:
 
     def create(self, spec: dict[str, Any]) -> dict[str, Any]:
         spec = {"worker_role": "worker", **spec}
-        tid = self.top.create_ticket(spec)
+        tid = self.director.create_ticket(spec)
         if tid is None:
-            raise StoreError(f"unknown department {spec.get('department')!r}; have {list(self.top.managers)}")
+            raise StoreError(f"unknown department {spec.get('department')!r}; have {list(self.director.managers)}")
         return {"ticket_id": tid}
 
     # ---------------------------------------------------------- run safety
@@ -215,7 +215,7 @@ class Ctl:
         before = {t["id"]: t["status"] for t in self.store.list_tickets()}
         halted = None
         try:
-            self.top.pump()
+            self.director.pump()
         except Halted as h:
             halted = str(h)
         after = self.board()
@@ -225,11 +225,11 @@ class Ctl:
         return {"halted": halted, "changed": changed, **after}
 
     def answer(self, ticket_id: str, text: str) -> dict[str, Any]:
-        return actions.answer(self.store, ticket_id, text, "top_manager")
+        return actions.answer(self.store, ticket_id, text, "director")
 
     def retry(self, ticket_id: str, text: str = "") -> dict[str, Any]:
         """Send an escalated ticket back to work (guidance is appended to its context)."""
-        return actions.retry(self.store, ticket_id, text, "top_manager")
+        return actions.retry(self.store, ticket_id, text, "director")
 
     def balance(self) -> dict[str, Any]:
         """Real account balances (providers that report one, e.g. DeepSeek) next to the orchestrator's estimate."""
@@ -245,11 +245,11 @@ class Ctl:
             return False
         for e in reversed(self.store.events(t["id"])):
             if e["type"] == "status_changed" and e["payload"].get("to") == "cancelled":
-                return e["actor"] == "top_manager"
+                return e["actor"] == "director"
         return False
 
     def set_models(self, ticket_id: str, manager: str | None = None, worker: str | None = None) -> dict[str, Any]:
-        """The top manager picks models per ticket (it applies to everything below it): e.g. the cheap model by
+        """The director picks models per ticket (it applies to everything below it): e.g. the cheap model by
         default and a stronger one for a hard or repeatedly failing ticket. 'default' removes a choice."""
         known = set(self._models_in_use()) | set(self.cfg.get("prices") or {})
         for m in (manager, worker):
@@ -258,13 +258,13 @@ class Ctl:
         changes = {k: (None if v == "default" else v) for k, v in (("manager", manager), ("worker", worker)) if v}
         if not changes:
             raise StoreError("give --manager and/or --worker (a model name, or 'default' to use the config)")
-        t = self.store.set_models(ticket_id, "top_manager", changes)
+        t = self.store.set_models(ticket_id, "director", changes)
         return {"ticket_id": ticket_id, "models": t.get("models") or {}}
 
     # ------------------------------------------------------- crash / power-loss recovery
 
     def recovery(self, apply: bool = False) -> dict[str, Any]:
-        """What a crash or power cut left behind, so a restarted top manager can pick the whole project
+        """What a crash or power cut left behind, so a restarted director can pick the whole project
         back up. With apply=True it also clears a stale run lock and marks dead background jobs 'lost'.
         It NEVER releases hardware claims: after an interruption the physical state is unknown."""
         active = self.run_active()
@@ -279,7 +279,7 @@ class Ctl:
         lost, alive_jobs = [], set()
         for j in self.store.list_jobs(state="running"):
             if apply:
-                j = self.top.jobs.refresh(j["id"], "recovery")
+                j = self.director.jobs.refresh(j["id"], "recovery")
                 live = j["state"] == "running"
             else:
                 live = process_alive(j["pid"], j.get("pid_started"))
@@ -309,12 +309,12 @@ class Ctl:
         return {"resources": [r["name"] for r in self.store.list_resources()]}
 
     def set_safe_to_stop(self, name: str, note: str) -> dict[str, Any]:
-        self.store.set_safe_to_stop(name, note, actor="top_manager")
+        self.store.set_safe_to_stop(name, note, actor="director")
         return {"resource": name, "safe_to_stop": note}
 
     def release_resource(self, name: str, reason: str) -> dict[str, Any]:
         """Explicitly free a hardware resource after a human has confirmed its physical state."""
-        self.store.force_release_resource(name, "top_manager", reason or "released after recovery")
+        self.store.force_release_resource(name, "director", reason or "released after recovery")
         return {"released": name}
 
     def human_said(self, text: str) -> dict[str, Any]:
@@ -371,8 +371,8 @@ class Ctl:
         code_cfg = self.cfg.get("code") or {}
         out = repo.merge_to_integration(ticket_id, f"Merge {ticket_id}: {t['title']}",
                                         list(code_cfg.get("integration_checks") or []), float(code_cfg.get("test_timeout", 600)))
-        self.store.add_event(ticket_id, "top_manager", "code_accepted",
-                             {"merge_commit": out["merge_commit"], "by": "top_manager", "into": repo.integration_branch})
+        self.store.add_event(ticket_id, "director", "code_accepted",
+                             {"merge_commit": out["merge_commit"], "by": "director", "into": repo.integration_branch})
         return {"accepted": ticket_id, "merge_commit": out["merge_commit"], "into": repo.integration_branch,
                 "next": "ctl code integration shows what is waiting; ctl code release merges it into " + repo.base_branch}
 
@@ -388,7 +388,7 @@ class Ctl:
         out = repo.release(f"Release integration ({repo.integration_status()['ahead']} commits) into {repo.base_branch}",
                            checks=list(ccfg.get("integration_checks") or []),
                            timeout=float(ccfg.get("test_timeout", 600)))
-        self.store.add_event(None, "top_manager", "code_released", out)
+        self.store.add_event(None, "director", "code_released", out)
         return out
 
     def code_sync(self) -> dict[str, Any]:
@@ -405,25 +405,25 @@ class Ctl:
             root = self.store.get_ticket(root["parent_id"])
         worker = rework_spec(t, feedback)
         new = self.store.create_ticket({
-            "title": f"Redo: {t['title']}", "assignee": root["assignee"], "worker_role": "worker", "cc": ["top_manager"],
+            "title": f"Redo: {t['title']}", "assignee": root["assignee"], "worker_role": "worker", "cc": ["director"],
             "context": worker["context"], "acceptance_criteria": t["acceptance_criteria"], "return_spec": t["return_spec"],
-            "rigor": worker["rigor"], "worker_tickets": [worker]}, actor="top_manager")
+            "rigor": worker["rigor"], "worker_tickets": [worker]}, actor="director")
         repo.discard(ticket_id)
-        self.store.add_event(ticket_id, "top_manager", "code_rejected", {"feedback": feedback.strip()[:500], "replacement": new["id"]})
+        self.store.add_event(ticket_id, "director", "code_rejected", {"feedback": feedback.strip()[:500], "replacement": new["id"]})
         return {"rejected": ticket_id, "replacement_ticket": new["id"], "assignee": new["assignee"]}
 
     def code_discard(self, ticket_id: str) -> dict[str, Any]:
         self._ready_ticket(ticket_id)
         self._repo().discard(ticket_id)
-        self.store.add_event(ticket_id, "top_manager", "code_discarded", {})
+        self.store.add_event(ticket_id, "director", "code_discarded", {})
         return {"discarded": ticket_id}
 
     def handoff(self, ticket_id: str, text: str = "") -> dict[str, Any]:
-        """Only for what you (the top manager) could not resolve: put it in front of the human."""
-        return actions.handoff(self.store, ticket_id, text, "top_manager")
+        """Only for what you (the director) could not resolve: put it in front of the human."""
+        return actions.handoff(self.store, ticket_id, text, "director")
 
     def cancel(self, ticket_id: str, text: str = "") -> dict[str, Any]:
-        return actions.cancel(self.store, ticket_id, text, "top_manager")
+        return actions.cancel(self.store, ticket_id, text, "director")
 
     # ---------------------------------------------------------------- watch
 
@@ -434,7 +434,7 @@ class Ctl:
             return set()
 
     def watch(self, timeout: float = 600, grace: float = 10, poll: float = 2.0) -> dict[str, Any]:
-        """Block until something needs the human/top manager, then return immediately:
+        """Block until something needs the human/director, then return immediately:
           attention       new escalation or question (reported once)
           completed       a department finished a top-level ticket: read its result and follow-ups, assign next work
           pending_no_run  work is waiting but no run is active (start `run`)
@@ -479,22 +479,22 @@ class Ctl:
 
     def state(self, set_text: str | None = None) -> dict[str, Any]:
         if set_text is not None:
-            self.top.memory.write_state(set_text)
-        return {"state": self.top.memory.read_state()}
+            self.director.memory.write_state(set_text)
+        return {"state": self.director.memory.read_state()}
 
     def log(self, text: str) -> dict[str, Any]:
-        self.top.memory.append_journal(text)
+        self.director.memory.append_journal(text)
         return {"logged": True}
 
     def finish(self, summary: str) -> dict[str, Any]:
-        self.top.memory.append_journal(f"FINISHED: {summary}")
+        self.director.memory.append_journal(f"FINISHED: {summary}")
         atomic_write(self.workspace / "FINISHED", summary)
         return {"finished": True}
 
     def pause(self, on: bool) -> dict[str, Any]:
         p = self.workspace / "PAUSE"
         if on:
-            p.write_text("paused by top manager", encoding="utf-8")
+            p.write_text("paused by director", encoding="utf-8")
         elif p.exists():
             p.unlink()
         return {"paused": on}
@@ -553,7 +553,7 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
     sub.add_parser("human").add_argument("text")
     m = sub.add_parser("models", help="show/detect/set which models run each role")
     m.add_argument("action", nargs="?", default="show", choices=["show", "detect", "set", "use-cli"])
-    m.add_argument("--tiers", default=",".join(DEFAULT_TIERS), help="comma list of: manager, worker, verifier, top")
+    m.add_argument("--tiers", default=",".join(DEFAULT_TIERS), help="comma list of: manager, worker, verifier, director")
     m.add_argument("--provider")
     m.add_argument("--model", default="default")
     m.add_argument("--cli", choices=sorted(CLI_PRESETS))

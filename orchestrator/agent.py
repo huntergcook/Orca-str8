@@ -188,7 +188,7 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
             why = "; ".join(f"{m}: {UNAVAILABLE.get(m, '')}" for m in models)[:600]
             status("escalated", "no usable model")
             return store.escalate(ticket_id, actor, f"no usable model (all out of quota or limit): {why}",
-                                  kind="technical", to="top_manager")
+                                  kind="technical", to="director")
         model = chain[min(invalid, len(chain) - 1)]
         if store.get_ticket(ticket_id)["status"] == "cancelled":       # cancelled from above: stop, keep what was saved
             status("cancelled", "ticket cancelled")

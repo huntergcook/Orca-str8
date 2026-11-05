@@ -11,7 +11,7 @@
     },
     "created_by": { "type": "string", "description": "Agent id of the submitter." },
     "assignee": { "type": "string", "description": "Department manager id, or worker id once spawned." },
-    "cc": { "type": "array", "items": { "type": "string" }, "description": "e.g. top manager on cross-department tickets." },
+    "cc": { "type": "array", "items": { "type": "string" }, "description": "e.g. director on cross-department tickets." },
     "worker_role": { "type": "string", "description": "Role template used to spawn the worker." },
     "path_trace": {
       "type": "array",
@@ -39,7 +39,7 @@
     "rigor": {
       "enum": ["quick_and_dirty", "balanced", "rigorous"],
       "default": "balanced",
-      "description": "How good is good enough. Set by the top manager's rigor profile; used by workers and Verification."
+      "description": "How good is good enough. Set by the director's rigor profile; used by workers and Verification."
     },
     "budget": {
       "type": "object",
@@ -91,7 +91,7 @@
       "type": "object",
       "description": "Present while the ticket is escalated or waiting on a question: who must handle it.",
       "properties": {
-        "to": { "enum": ["manager", "top_manager", "human"] },
+        "to": { "enum": ["manager", "director", "human"] },
         "kind": { "type": "string", "description": "blocked | technical | safety | refusal | question" },
         "reason": { "type": "string" },
         "handed_off_by": { "type": "string" }

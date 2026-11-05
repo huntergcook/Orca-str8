@@ -132,7 +132,7 @@ def test_a_worker_reads_the_repo_through_the_manager_config(tmp_path, repo):
                       j(action="done", result={"read": "yes"}),
                       j(action="done", result={"final": 1})])
     m = Manager("research_manager", store, p, cfg, tmp_path / "ws", "role", ["m"], ["w"])
-    top = store.create_ticket({**spec, "assignee": "research_manager", "worker_role": "worker"}, "top_manager")["id"]
+    top = store.create_ticket({**spec, "assignee": "research_manager", "worker_role": "worker"}, "director")["id"]
     assert m.work(top)["status"] == "done"
     assert "# Plan" in p.calls[2]["messages"][-1]["content"]            # the file's text reached the worker
     assert str(repo) in p.calls[1]["system"]                             # and it was told which roots it may read
@@ -156,7 +156,7 @@ def test_project_rules_reach_managers_workers_and_verifiers(tmp_path, monkeypatc
                       j(verdict="pass", issues=[], advice="")])
     v = Verifier(store, p, cfg, tmp_path / "ws", ["verifier-model"])
     m = Manager("research_manager", store, p, cfg, tmp_path / "ws", "role", ["m"], ["w"], verifier=v)
-    top = store.create_ticket({**spec, "assignee": "research_manager", "worker_role": "worker"}, "top_manager")["id"]
+    top = store.create_ticket({**spec, "assignee": "research_manager", "worker_role": "worker"}, "director")["id"]
     assert m.work(top)["status"] == "done"
     manager_system, worker_system, _, verifier_call = p.calls[0], p.calls[1], p.calls[2], p.calls[3]
     assert "NEVER copy decompiled code" in manager_system["system"] and "apply them to every worker ticket" in manager_system["system"]

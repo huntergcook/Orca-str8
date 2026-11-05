@@ -6,7 +6,7 @@ from orchestrator import Store
 from orchestrator.config import load_config
 from orchestrator.manager import Manager
 from orchestrator.providers import Completion, MockProvider
-from orchestrator.top import TopManager
+from orchestrator.director import Director
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def mk_manager(store, tmp_path, script):
 
 
 def top_ticket(store):
-    return store.create_ticket(dict(SPEC, assignee="research_manager", worker_role="worker"), "top_manager")["id"]
+    return store.create_ticket(dict(SPEC, assignee="research_manager", worker_role="worker"), "director")["id"]
 
 
 def test_plan_run_review(store, tmp_path):
@@ -45,7 +45,7 @@ def test_plan_run_review(store, tmp_path):
     assert t["status"] == "done" and t["result"] == {"final": 1}
     kids = store.list_tickets(parent_id=tid)
     assert len(kids) == 1 and kids[0]["status"] == "done"
-    assert kids[0]["path_trace"] == ["top_manager", tid]
+    assert kids[0]["path_trace"] == ["director", tid]
     assert "split it" in m.memory.read_journal()
     assert [c["model"] for c in p.calls] == ["m", "w", "m"]
 
@@ -90,7 +90,7 @@ def test_garbage_escalates(store, tmp_path):
     assert m.work(top_ticket(store))["status"] == "escalated"
 
 
-def test_top_manager_end_to_end(store, tmp_path):
+def test_director_end_to_end(store, tmp_path):
     cfg = load_config(None)
     cfg["departments"] = {"research": {"mission": "do research"}}
     top_reply = j(say="On it. What rigor do you want?", actions=[
@@ -101,7 +101,7 @@ def test_top_manager_end_to_end(store, tmp_path):
                       j(action="delegate", tickets=[SPEC]),
                       j(action="done", result={"s": 1}),
                       j(action="done", result={"final": 1})])
-    top = TopManager(store, p, cfg, tmp_path)
+    top = Director(store, p, cfg, tmp_path)
     say = top.turn("Survey X please")
     assert say.startswith("On it")
     board = top.board()
@@ -116,9 +116,9 @@ def test_top_manager_end_to_end(store, tmp_path):
     assert "goal: survey X" in p.calls[-1]["system"] and "[done]" in p.calls[-1]["system"]
 
 
-def test_top_manager_refusal_is_surfaced_not_rerouted(store, tmp_path):
+def test_director_refusal_is_surfaced_not_rerouted(store, tmp_path):
     cfg = load_config(None)
     p = MockProvider([Completion(text="", refused=True, refusal_category="cyber", model="m")])
-    top = TopManager(store, p, cfg, tmp_path)
+    top = Director(store, p, cfg, tmp_path)
     assert "declined" in top.turn("do something")
     assert len(p.calls) == 1

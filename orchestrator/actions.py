@@ -1,4 +1,4 @@
-"""Human/top-manager actions on tickets that need attention. Shared by the CLI (ctl) and the dashboard
+"""Human/director actions on tickets that need attention. Shared by the CLI (ctl) and the dashboard
 so both behave identically. Every action validates the ticket's state first.
 
   answer  a question asked upward (needs_clarification)
@@ -23,12 +23,12 @@ FINISHED = ("done", "failed", "cancelled")
 
 
 def route_of(ticket: dict[str, Any]) -> str | None:
-    """Who must handle a ticket that needs attention: 'manager', 'top_manager' or 'human'.
+    """Who must handle a ticket that needs attention: 'manager', 'director' or 'human'.
     None if it needs nobody. Tickets escalated before routing existed are derived from their level."""
     if ticket["status"] not in ("escalated", "needs_clarification"):
         return None
     to = (ticket.get("escalation") or {}).get("to")
-    return to or ("manager" if ticket.get("parent_id") else "top_manager")
+    return to or ("manager" if ticket.get("parent_id") else "director")
 
 
 def retries_used(store: Store, ticket_id: str) -> int:
@@ -39,7 +39,7 @@ def why_from_events(events: list[dict[str, Any]]) -> str:
     """One-line reason a ticket needs attention, from its events (payloads already decoded)."""
     for e in reversed(events):
         p = e.get("payload") or {}
-        if e["type"] == "handoff" and p.get("reason"):      # the top manager's explanation to the human
+        if e["type"] == "handoff" and p.get("reason"):      # the director's explanation to the human
             return str(p["reason"])
         if e["type"] == "run_error":
             return str(p.get("error", ""))

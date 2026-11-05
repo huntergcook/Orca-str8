@@ -7,7 +7,7 @@ def test_scaffold_writes_agents_md_for_codex_and_binds_the_project(tmp_path):
     assert {"AGENTS.md", "orchestrate.md", "orchestrator.yaml"} <= written
     agents = (root / "AGENTS.md").read_text(encoding="utf-8")
     proj = str(root.resolve())
-    assert agents.startswith("# Orchestrator project: top manager instructions")
+    assert agents.startswith("# Orchestrator project: director instructions")
     assert "argument-hint" not in agents and "$ARGUMENTS" not in agents          # slash-command bits removed
     assert "whatever they ask you next" in agents
     assert "Choosing models" in agents and "use-cli codex" in agents

@@ -79,6 +79,6 @@ def test_manager_can_finish_with_a_string_result(store, tmp_path):
                 load_config(None), tmp_path, "role", ["m"], ["w"])
     top = store.create_ticket(dict(title="T", assignee="research_manager", worker_role="w", context="c",
                                    acceptance_criteria=["a"], return_spec={"format": "f", "description": "d"}),
-                              actor="top_manager")["id"]
+                              actor="director")["id"]
     t = m.work(top)
     assert t["status"] == "done" and t["result"] == {"text": "plain text report"}

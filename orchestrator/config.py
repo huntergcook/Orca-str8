@@ -16,7 +16,7 @@ DEFAULTS: dict[str, Any] = {
         "worktrees_dir": None,  # default: <repo>-worktrees next to the repo
         "test_timeout": 600,    # seconds per acceptance command
         "gates": {"secret_scan": True, "extra_commands": []},
-        "review": "manager",    # manager: the Software manager reviews and integrates branches; top_manager: you do (ctl code)
+        "review": "manager",    # manager: the Software manager reviews and integrates branches; director: you do (ctl code)
         "integration_branch": None,   # default: orchestrator/integration (managers merge here; ctl code release -> base branch)
         "integration_checks": [],     # commands run on the merged result; a merge that breaks them is undone
     },
@@ -31,7 +31,7 @@ DEFAULTS: dict[str, Any] = {
         "codex-cli": {"type": "cli", "preset": "codex"},       # Codex CLI as a backend: no API key needed
     },
     "models": {
-        "top": {"provider": "anthropic", "model": "claude-opus-5-5"},
+        "director": {"provider": "anthropic", "model": "claude-opus-5-5"},
         "manager": {"provider": "anthropic", "model": "claude-opus-5-5"},
         "worker": {"provider": "anthropic", "model": "claude-opus-5-5"},
         "fallback_chain": [],
@@ -51,7 +51,7 @@ DEFAULTS: dict[str, Any] = {
         "worker_context_chars": 200000,  # a worker's conversation size before old tool results are shortened
         "max_manager_tool_steps": 25,  # tool calls per manager decision
         "max_manager_rounds": 20,      # decisions per manager ticket before it is escalated as stuck
-        "approve_cross_department_work": False,   # true: request_work tickets wait for the top manager (tight budgets)
+        "approve_cross_department_work": False,   # true: request_work tickets wait for the director (tight budgets)
         "max_worker_retries": 2,       # manager retries per worker before it must delegate differently or give up
         "default_rigor": "balanced",
         "verification_is_advisory": True,
@@ -64,6 +64,17 @@ DEFAULTS: dict[str, Any] = {
     "departments": {},
     "interfaces": {"cli": True, "dashboard": {"enabled": True, "port": 8080}},
 }
+
+
+def _legacy_names(data: dict[str, Any]) -> dict[str, Any]:
+    """Older configs name the director's model tier `top`; accept that so existing projects keep working."""
+    models = data.get("models")
+    if isinstance(models, dict) and "top" in models:
+        models = dict(models)
+        top = models.pop("top")
+        models.setdefault("director", top)
+        data = {**data, "models": models}
+    return data
 
 
 def _merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
@@ -117,11 +128,11 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         load_dotenv(Path(path).resolve().parent.parent / ".env")
     if path is None:
         return copy.deepcopy(DEFAULTS)
-    data = (yaml.safe_load(Path(path).read_text()) or {}) if Path(path).exists() else {}
+    data = _legacy_names((yaml.safe_load(Path(path).read_text()) or {}) if Path(path).exists() else {})
     cfg = _merge(DEFAULTS, data)
     overlay = overlay_path(path)
     if overlay.exists():                       # model choices made with `ctl models` win over the base file
-        over = yaml.safe_load(overlay.read_text()) or {}
+        over = _legacy_names(yaml.safe_load(overlay.read_text()) or {})
         cfg = _merge(cfg, {k: v for k, v in over.items() if k in ("models", "verification", "providers")})
     return cfg
 

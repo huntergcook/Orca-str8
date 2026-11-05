@@ -1,4 +1,4 @@
-# Role: Top Manager
+# Role: Director
 
 You are the only agent that talks to the human operator.
 

@@ -56,11 +56,11 @@ def test_attention_answer_and_retry(tmp_path):
     out = ctl.run()
     att = out["needs_attention"]
     assert att[0]["id"] == tid and att[0]["open_question"] == "human, which budget?" and att[0]["level"] == "top"
-    assert att[0]["route"] == "top_manager"                      # a manager's question goes to the top manager
+    assert att[0]["route"] == "director"                      # a manager's question goes to the director
     assert ctl.answer(tid, "$10")["status"] == "in_progress"
     out = ctl.run()
     # the worker's escalation stays with its manager (who reviewed it and asked upward); only the
-    # manager's question reaches the top manager's list
+    # manager's question reaches the director's list
     assert [a["level"] for a in out["needs_attention"]] == ["top"]
     assert out["managers_handling"] and out["managers_handling"][0]["status"] == "escalated"
     ctl.close()
@@ -115,7 +115,7 @@ def test_cli_main_roundtrip(tmp_path, capsys, monkeypatch):
 
 def test_smoke_skips_external_tier():
     cfg = load_config(None)
-    cfg["models"]["top"] = {"provider": "external", "model": "claude-code"}
+    cfg["models"]["director"] = {"provider": "external", "model": "claude-code"}
     cfg["models"]["manager"] = {"provider": "deepseek", "model": "deepseek-v4-pro"}
     cfg["models"]["worker"] = {"provider": "deepseek", "model": "deepseek-flash"}
     cfg["verification"]["verifier_models"] = ["deepseek-v4-pro", "deepseek-flash"]
@@ -143,7 +143,7 @@ def test_missing_key_fails_fast_with_location(tmp_path, monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     cfg = load_config(None)
     cfg["departments"] = {"research": {}}
-    cfg["models"]["top"] = {"provider": "external", "model": "claude-code"}
+    cfg["models"]["director"] = {"provider": "external", "model": "claude-code"}
     cfg["models"]["manager"] = {"provider": "deepseek", "model": "deepseek-v4-pro"}
     cfg["models"]["worker"] = {"provider": "deepseek", "model": "deepseek-flash"}
     cfg["verification"]["enabled"] = False

@@ -6,7 +6,7 @@ from orchestrator import Store
 from orchestrator.config import load_config
 from orchestrator.manager import Manager
 from orchestrator.providers import Completion, MockProvider
-from orchestrator.top import TopManager
+from orchestrator.director import Director
 from orchestrator.verification import Verifier
 
 
@@ -42,7 +42,7 @@ def setup(store, tmp_path, script, verifier_models=("va", "vb"), rigor=None):
     spec = dict(SPEC, assignee="research_manager", worker_role="worker")
     if rigor:
         spec["rigor"] = rigor
-    tid = store.create_ticket(spec, "top_manager")["id"]
+    tid = store.create_ticket(spec, "director")["id"]
     return m, p, tid
 
 
@@ -105,8 +105,8 @@ def test_round_cap_lets_manager_decision_stand(store, tmp_path):
 
 
 def test_verifier_sees_scope_evidence_and_rigor(store, tmp_path):
-    (tmp_path / "memory" / "top_manager").mkdir(parents=True)
-    (tmp_path / "memory" / "top_manager" / "state.md").write_text("GOAL: characterize the sensor drift")
+    (tmp_path / "memory" / "director").mkdir(parents=True)
+    (tmp_path / "memory" / "director" / "state.md").write_text("GOAL: characterize the sensor drift")
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / "out.csv").write_text("t,v\n1,2")
     m, p, tid = setup(store, tmp_path, [
@@ -141,7 +141,7 @@ def test_disabled_by_default_and_skipped_for_verification_dept(store, tmp_path):
     cfg["verification"]["enabled"] = True
     cfg["verification"]["verifier_models"] = ["va", "vb"]
     cfg["departments"] = {"research": {}, "verification": {"diverse_models": True}}
-    top = TopManager(store, MockProvider([]), cfg, tmp_path)
+    top = Director(store, MockProvider([]), cfg, tmp_path)
     assert top.managers["research"].verifier is not None
     assert top.managers["verification"].verifier is None             # verifiers aren't verified
     assert top.managers["verification"].diverse_workers
@@ -154,7 +154,7 @@ def test_diverse_worker_rotation(store, tmp_path):
                       j(action="done", result={}), j(action="done", result={}), j(action="done", result={}),
                       j(action="done", result={})])
     m = Manager("verification_manager", store, p, cfg, tmp_path, "role", ["m"], ["va", "vb"], diverse_workers=True)
-    tid = store.create_ticket(dict(SPEC, assignee="verification_manager", worker_role="worker"), "top_manager")["id"]
+    tid = store.create_ticket(dict(SPEC, assignee="verification_manager", worker_role="worker"), "director")["id"]
     m.work(tid)
     # workers run in parallel, so call order varies; the rotation still spreads them across both models
     assert sorted(c["model"] for c in p.calls[1:4]) == ["va", "va", "vb"]

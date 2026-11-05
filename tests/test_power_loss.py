@@ -156,7 +156,7 @@ def test_memory_and_human_log_survive_a_restart(tmp_path):
     assert "map the drift" in r["state_notes"] and "pyserial" in r["journal_tail"]
     assert "quick-and-dirty, finish by Friday" in r["human_log_tail"]
     again.close()
-    assert Memory(tmp_path, "top_manager").read_state() == "GOAL: map the drift"
+    assert Memory(tmp_path, "director").read_state() == "GOAL: map the drift"
 
 
 def test_old_databases_get_the_new_jobs_column(tmp_path):

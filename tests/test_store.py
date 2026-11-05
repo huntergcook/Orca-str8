@@ -26,39 +26,39 @@ def base(**over):
 
 
 def test_create_and_get(store):
-    t = store.create_ticket(base(), actor="top_manager")
+    t = store.create_ticket(base(), actor="director")
     got = store.get_ticket(t["id"])
     assert got["status"] == "open"
-    assert got["path_trace"] == ["top_manager"]
-    assert got["created_by"] == "top_manager"
+    assert got["path_trace"] == ["director"]
+    assert got["created_by"] == "director"
 
 
 def test_validation_rejects_bad_ticket(store):
     bad = base()
     del bad["return_spec"]
     with pytest.raises(StoreError, match="return_spec"):
-        store.create_ticket(bad, actor="top_manager")
+        store.create_ticket(bad, actor="director")
     with pytest.raises(StoreError):
-        store.create_ticket(base(rigor="sloppy"), actor="top_manager")
+        store.create_ticket(base(rigor="sloppy"), actor="director")
     assert store.list_tickets() == []
 
 
 def test_child_extends_path_trace_and_parent(store):
-    p = store.create_ticket(base(), actor="top_manager")
+    p = store.create_ticket(base(), actor="director")
     c = store.create_ticket(base(assignee="worker-1"), actor="research_manager", parent_id=p["id"])
-    assert c["path_trace"] == ["top_manager", p["id"]]
+    assert c["path_trace"] == ["director", p["id"]]
     assert store.get_ticket(p["id"])["children"] == [c["id"]]
 
 
 def test_fanout_cap(store):
-    p = store.create_ticket(base(), actor="top_manager")
+    p = store.create_ticket(base(), actor="director")
     store.create_ticket(base(), actor="m", parent_id=p["id"], max_children=1)
     with pytest.raises(StoreError, match="children"):
         store.create_ticket(base(), actor="m", parent_id=p["id"], max_children=1)
 
 
 def test_transitions(store):
-    t = store.create_ticket(base(), actor="top_manager")
+    t = store.create_ticket(base(), actor="director")
     store.transition(t["id"], "in_progress", "worker-1")
     done = store.transition(t["id"], "done", "worker-1", result={"summary": "ok"})
     assert done["result"] == {"summary": "ok"}
@@ -69,7 +69,7 @@ def test_transitions(store):
 
 
 def test_clarification_flow(store):
-    t = store.create_ticket(base(), actor="top_manager")
+    t = store.create_ticket(base(), actor="director")
     store.transition(t["id"], "in_progress", "w")
     q = store.ask_question(t["id"], "w", "Which year range?")
     assert q["status"] == "needs_clarification"
@@ -81,7 +81,7 @@ def test_clarification_flow(store):
 
 
 def test_events_logged_and_append_only(store):
-    t = store.create_ticket(base(), actor="top_manager")
+    t = store.create_ticket(base(), actor="director")
     store.transition(t["id"], "in_progress", "w", note="start")
     evs = store.events(t["id"])
     assert [e["type"] for e in evs] == ["created", "status_changed"]
@@ -93,7 +93,7 @@ def test_events_logged_and_append_only(store):
 
 
 def test_failed_transition_leaves_no_event(store):
-    t = store.create_ticket(base(), actor="top_manager")
+    t = store.create_ticket(base(), actor="director")
     with pytest.raises(InvalidTransition):
         store.transition(t["id"], "done", "w")
     assert [e["type"] for e in store.events(t["id"])] == ["created"]

@@ -57,11 +57,11 @@ class Verifier:
 
     def scope_text(self, ticket: dict[str, Any]) -> str:
         root = self.root_ticket(ticket)
-        state = self.workspace / "memory" / "top_manager" / "state.md"
+        state = self.workspace / "memory" / "director" / "state.md"
         notes = state.read_text(encoding="utf-8")[:4000] if state.exists() else "(none)"
         return (f"## Broader goal (top-level ticket {root['id']}: {root['title']})\n{root['context']}\n"
                 f"Acceptance: {'; '.join(root['acceptance_criteria'])}\n\n"
-                f"## Top manager's state notes (goal, stopping criteria, rigor profile)\n{notes}")
+                f"## Director's state notes (goal, stopping criteria, rigor profile)\n{notes}")
 
     def evidence(self, ticket: dict[str, Any], result: Any, max_files: int = 5) -> str:
         """Artifacts the result points at: files named in return_spec.destination, workspace_refs,

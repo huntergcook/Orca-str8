@@ -54,7 +54,7 @@ last bad reply, then fix it yourself: retry_workers with specific guidance (a re
 fallback model; each worker has a limited number of retries), delegate a differently-scoped replacement, or
 accept the gap and finish. Typical fixes: tell it to save long content to a file and reply briefly, narrow its
 scope, or give it the missing information. Use "escalate" only for what you truly cannot resolve (it goes to the
-top manager, and only from there possibly to the human). Use kind "safety" only for real safety concerns, which go
+director, and only from there possibly to the human). Use kind "safety" only for real safety concerns, which go
 straight to the human.
 
 YOU HAVE FULL AUTHORITY AND YOUR OWN TOOLS. Before answering you may call tools ({"action": "tool", ...}) to read the
@@ -62,7 +62,7 @@ project, check a worker's output, run a test, or fix something yourself: when a 
 back, do it. Use request_work to give other departments work you find that they should do.
 NO HOLES: your department's work must be complete. Every acceptance criterion needs real evidence; every follow-up a
 worker raised is done, delegated, or passed up. Your final result should include "follow_ups": [...] listing work you
-know should happen that you did not do, so the top manager can plan it."""
+know should happen that you did not do, so the director can plan it."""
 
 
 def load_role(name: str, default: str = "") -> str:
@@ -219,7 +219,7 @@ class Manager:
         repo = self.code_repo
         if repo is None:
             self.store.escalate(c["id"], c["assignee"], "code tickets need a git repository (set code.repo in the config)",
-                                kind="technical", to="top_manager")
+                                kind="technical", to="director")
             return
         spec, code_cfg = CodeSpec.from_ticket(c), self.cfg.get("code") or {}
         worktree = repo.ensure_worktree(c["id"])
@@ -559,9 +559,9 @@ class Manager:
                         self.store.answer_question(c["id"], self.name, str(d.get("answer", "")))
                     elif d and self._apply(ticket_id, d):
                         return self._settle(ticket_id)          # asked/escalated upward instead
-                    else:     # the manager is the one stuck, so this goes to the top manager
+                    else:     # the manager is the one stuck, so this goes to the director
                         self.store.escalate(c["id"], self.name, "manager could not answer the worker's question",
-                                            kind="blocked", to="top_manager")
+                                            kind="blocked", to="director")
                 continue
 
             # 3. review finished branches while others still work, so nobody waits on the slowest worker
@@ -593,7 +593,7 @@ class Manager:
                 break
             rounds += 1
             if not children and t.get("worker_tickets"):
-                # the top manager wrote exact worker tickets: delegate them as written, no planning call
+                # the director wrote exact worker tickets: delegate them as written, no planning call
                 try:
                     self._delegate(ticket_id, {"tickets": t["worker_tickets"]})
                 except StoreError as e:
@@ -611,7 +611,7 @@ class Manager:
                                  f"{self._children_summary(ticket_id)}\n\nReview, then finish or delegate follow-ups. "
                                  "Before finishing, make sure there are no holes: every acceptance criterion of your ticket "
                                  "is met by real evidence, and every follow-up your workers raised is either done, delegated, "
-                                 "or listed in your result's follow_ups for the top manager."
+                                 "or listed in your result's follow_ups for the director."
                                  + self._branch_packets(ticket_id)
                                  + (f"\n\n# IMPORTANT\n{self._notice.pop(ticket_id)}" if ticket_id in self._notice else ""),
                                  ticket_id, "reviewing results")

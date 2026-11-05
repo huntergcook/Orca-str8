@@ -13,6 +13,6 @@ Make sure no one in the lab reinvents the wheel. You own the tool library (`work
 ## Standards
 - Prefer the language and stack that match the task: Python when an open-source Python tool exists, C/C++ only when performance demands it.
 - Every registry entry needs: description, usage example, source URL, license, tags.
-- Flag missing or restrictive licenses to the top manager.
+- Flag missing or restrictive licenses to the director.
 - Treat acquired code as untrusted: inspect before running, and say so in the usage notes if a tool needs privileges or network access.
 - Only your department may search for and acquire external tools. Other departments request them with tickets.

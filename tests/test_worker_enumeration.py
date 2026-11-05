@@ -23,7 +23,7 @@ def test_workers_are_numbered_per_role(tmp_path):
     p = MockProvider([j(action="delegate", tickets=[spec("surveyor"), spec("surveyor"), spec("analyst"),
                                                     spec("surveyor")])])
     m = Manager("research_manager", store, p, load_config(None), tmp_path, "role", ["m"], ["w"])
-    top = store.create_ticket(dict(spec("worker"), assignee="research_manager"), "top_manager")["id"]
+    top = store.create_ticket(dict(spec("worker"), assignee="research_manager"), "director")["id"]
     d = m._decide("plan")                       # consumes the scripted delegate reply
     m._delegate(top, d)
     names = [c["assignee"] for c in store.list_tickets(parent_id=top)]

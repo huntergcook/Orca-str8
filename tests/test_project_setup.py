@@ -10,7 +10,7 @@ from orchestrator.ctl import Ctl, main
 from orchestrator.init import scaffold
 from orchestrator.manager import load_role
 from orchestrator.providers import MockProvider
-from orchestrator.top import TopManager
+from orchestrator.director import Director
 
 
 def j(**kw):
@@ -40,7 +40,7 @@ def test_a_department_can_use_a_project_manager_role_or_a_new_department(tmp_pat
                           "research": {"manager_role": "roles/research_manager.md"},      # built-in, found in the repo
                           "art": {"mission": "make placeholder art"}}                      # no file: template + mission
     store = Store(tmp_path / "t.db")
-    top = TopManager(store, MockProvider([]), cfg, tmp_path / "ws")
+    top = Director(store, MockProvider([]), cfg, tmp_path / "ws")
     assert "GAME DEVELOPMENT" in top.managers["gamedev"].role_text
     assert "Research Manager" in top.managers["research"].role_text
     assert "make placeholder art" in top.managers["art"].role_text

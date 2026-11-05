@@ -18,7 +18,7 @@ def mk(store, **over):
     d = dict(title="T", assignee="research_manager", worker_role="w", context="c",
              acceptance_criteria=["a"], return_spec={"format": "f", "description": "d"})
     d.update(over)
-    return store.create_ticket(d, actor="top_manager")
+    return store.create_ticket(d, actor="director")
 
 
 def test_state_and_html(store, tmp_path):
@@ -67,9 +67,9 @@ def test_demo_seed_fills_every_panel(tmp_path):
 def test_dashboard_shows_proposals_models_skipped_models_and_real_money(store, tmp_path):
     from orchestrator.config import load_config
     prop = mk(store, title="Build X for research", assignee="software_manager")
-    store.escalate(prop["id"], "research_manager", "proposed by research_manager", kind="proposal", to="top_manager")
+    store.escalate(prop["id"], "research_manager", "proposed by research_manager", kind="proposal", to="director")
     hard = mk(store, title="Hard one")
-    store.set_models(hard["id"], "top_manager", {"worker": "deepseek-v4-pro"})
+    store.set_models(hard["id"], "director", {"worker": "deepseek-v4-pro"})
     store.add_event(hard["id"], "w", "model_unavailable", {"model": "claude-cli:haiku", "why": "hit your 5-hour limit"})
     store.add_event(None, "w", "usage", {"model": "flash", "input_tokens": 1_000_000, "output_tokens": 0})
     cfg = load_config(None)

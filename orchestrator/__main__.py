@@ -1,4 +1,4 @@
-"""CLI: talk to the top manager.   python -m orchestrator [--config PATH] [--db PATH]"""
+"""CLI: talk to the director.   python -m orchestrator [--config PATH] [--db PATH]"""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ from .config import load_config
 from .limits import GuardedProvider, Halted
 from .providers import build_provider
 from .store import Store
-from .top import TopManager
+from .director import Director
 
 
 def main() -> None:
@@ -22,9 +22,9 @@ def main() -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     store = Store(args.db or workspace / "orchestrator.db")
     provider = GuardedProvider(build_provider(cfg), store, cfg, workspace)
-    top = TopManager(store, provider, cfg, workspace)
+    top = Director(store, provider, cfg, workspace)
 
-    print("Orchestrator top manager. Ctrl+C or /quit to exit; /board shows tickets.")
+    print("Orchestrator director. Ctrl+C or /quit to exit; /board shows tickets.")
     print(f"Create {workspace / 'PAUSE'} to halt all model calls.")
     try:
         while not top.finished:
@@ -41,7 +41,7 @@ def main() -> None:
                 continue
             print(f"\ntop> {top.turn(text)}")
         if top.finished:
-            print("\n[Top manager has ended the run.]")
+            print("\n[Director has ended the run.]")
     except KeyboardInterrupt:
         print()
     finally:

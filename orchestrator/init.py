@@ -23,7 +23,7 @@ providers:
   anthropic: {{ api_key_env: ANTHROPIC_API_KEY }}
 
 models:
-  top:     {{ provider: external, model: claude-code }}   # played by your Claude Code session (/orchestrate)
+  director: {{ provider: external, model: claude-code }}   # played by your Claude Code session (/orchestrate)
   manager: {{ provider: deepseek, model: deepseek-v4-pro }}
   worker:  {{ provider: deepseek, model: deepseek-flash }}
   fallback_chain: [{{ provider: deepseek, model: deepseek-v4-pro }}]   # tried when a worker's reply fails
@@ -81,7 +81,7 @@ Project run by the orchestrator at `{orch}`.
 1. Copy `.env.example` to `.env` and add your `DEEPSEEK_API_KEY`.
 2. Pre-flight: `python -m orchestrator.smoke`
 3. Dashboard (second terminal): `python -m orchestrator.dashboard` then open http://127.0.0.1:8080
-4. Start your agent in this folder: Claude Code (`claude`, then `/orchestrate <what you want done>`) or Codex (`codex`, then "act as the orchestrator top manager: <what you want done>"; it reads AGENTS.md).
+4. Start your agent in this folder: Claude Code (`claude`, then `/orchestrate <what you want done>`) or Codex (`codex`, then "act as the orchestrator director: <what you want done>"; it reads AGENTS.md).
 5. No API keys? Run `python -m orchestrator.ctl models use-cli codex` (or `claude`) to run every role on that CLI.
 
 State lives in `workspace/` (database, memory notes, tool library, jobs, reports).
@@ -93,7 +93,7 @@ def command_text(project: str | Path | None = None) -> str:
     """The /orchestrate command. With `project`, every ctl command carries --project <abs path>, so the
     work is bound to that folder even if the session's working directory drifts."""
     src = (ORCH_HOME / ".claude" / "commands" / "orchestrate.md").read_text(encoding="utf-8")
-    src = src.replace("`roles/top_manager.md`", f"`{ORCH_HOME / 'roles' / 'top_manager.md'}`")
+    src = src.replace("`roles/director.md`", f"`{ORCH_HOME / 'roles' / 'director.md'}`")
     if project is not None:
         proj = str(Path(project).resolve())
         # -P: do not put the working directory on sys.path, so a project that has its own top-level
@@ -108,15 +108,15 @@ def command_text(project: str | Path | None = None) -> str:
 
 
 def agents_text(project: str | Path) -> str:
-    """The same top-manager instructions as AGENTS.md, which Codex (and other agents) read automatically."""
+    """The same director instructions as AGENTS.md, which Codex (and other agents) read automatically."""
     body = command_text(project)
     if body.startswith("---"):                                  # drop the Claude Code slash-command frontmatter
         body = body.split("---", 2)[2].lstrip()
     body = body.replace("The human's request, if any: $ARGUMENTS", "The human's request is whatever they ask you next.")
     blank = chr(10) * 2
-    head = ("# Orchestrator project: top manager instructions" + blank +
+    head = ("# Orchestrator project: director instructions" + blank +
             "This folder is run by an LLM orchestrator. When the human asks you to run, continue, check on or "
-            "manage the project, you are its top manager and follow everything below. (Written for Codex; any "
+            "manage the project, you are its director and follow everything below. (Written for Codex; any "
             "agent that reads AGENTS.md works. Claude Code users get the same text as the /orchestrate command.)"
             + blank)
     return head + body

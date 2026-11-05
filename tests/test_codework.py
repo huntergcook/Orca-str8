@@ -362,7 +362,7 @@ def top_ticket(store, tickets):
     return store.create_ticket({"title": "Fix the calculator", "assignee": "software_manager", "worker_role": "worker",
                                 "context": "c", "acceptance_criteria": ["a"],
                                 "return_spec": {"format": "f", "description": "d"}, "worker_tickets": tickets},
-                               "top_manager")["id"]
+                               "director")["id"]
 
 
 @pytest.fixture
@@ -527,9 +527,9 @@ def test_verifiers_review_the_actual_patch_and_the_rules(repo_dir, tmp_path, sto
     assert "PATCH for" in seen and "+    return a + b" in seen and "No decompiled code in the repo" in seen
 
 
-# -------------------------------------------- the top manager can still review (review: top_manager)
+# -------------------------------------------- the director can still review (review: director)
 
-def make_ctl(repo_dir, tmp_path, team, review="top_manager"):
+def make_ctl(repo_dir, tmp_path, team, review="director"):
     cfg = cfg_for(repo_dir, tmp_path, review=review)
     cfg["workspace"] = str(tmp_path / "ws")
     return Ctl(cfg, tmp_path / "ws", team)
@@ -540,7 +540,7 @@ def create(ctl, tickets=None):
                            return_spec={"format": "f", "description": "d"}, worker_tickets=tickets or [WORKER_TICKET]))["ticket_id"]
 
 
-def test_top_manager_review_accept_integration_and_release(repo_dir, tmp_path):
+def test_director_review_accept_integration_and_release(repo_dir, tmp_path):
     ctl = make_ctl(repo_dir, tmp_path, Team())
     create(ctl)
     ctl.run()
@@ -559,7 +559,7 @@ def test_top_manager_review_accept_integration_and_release(repo_dir, tmp_path):
     ctl.close()
 
 
-def test_top_manager_reject_and_discard(repo_dir, tmp_path):
+def test_director_reject_and_discard(repo_dir, tmp_path):
     ctl = make_ctl(repo_dir, tmp_path, Team())
     create(ctl)
     ctl.run()
@@ -650,7 +650,7 @@ def test_a_delegation_with_an_unrunnable_acceptance_command_is_sent_back_before_
 
     m = Manager("software_manager", store, P(), cfg, tmp_path, "role", ["m"], ["w"], writes_code=True)
     t = store.create_ticket({"title": "T", "assignee": "software_manager", "worker_role": "w", "context": "c",
-                             "acceptance_criteria": ["a"], "return_spec": {"format": "f", "description": "d"}}, "top_manager")
+                             "acceptance_criteria": ["a"], "return_spec": {"format": "f", "description": "d"}}, "director")
     m.work(t["id"])
     assert store.list_tickets(parent_id=t["id"]) == []                        # nothing was delegated
     assert any("cannot run as written" in u for u in first)                   # the manager was told why

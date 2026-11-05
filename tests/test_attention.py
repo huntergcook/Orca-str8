@@ -27,14 +27,14 @@ def store(tmp_path):
 
 
 def escalated(store, title="T", parent=None, note="could not do it"):
-    t = store.create_ticket({**BASE, "title": title, "assignee": "research_manager"}, "top_manager", parent_id=parent)
+    t = store.create_ticket({**BASE, "title": title, "assignee": "research_manager"}, "director", parent_id=parent)
     store.transition(t["id"], "in_progress", "research_manager")
     store.transition(t["id"], "escalated", "research_manager", note=note)
     return t["id"]
 
 
 def asking(store, question="which budget?"):
-    t = store.create_ticket({**BASE, "title": "Q", "assignee": "research_manager"}, "top_manager")
+    t = store.create_ticket({**BASE, "title": "Q", "assignee": "research_manager"}, "director")
     store.transition(t["id"], "in_progress", "research_manager")
     store.ask_question(t["id"], "research_manager", question)
     return t["id"]
@@ -65,7 +65,7 @@ def test_retrying_a_worker_reopens_its_escalated_parent_but_not_a_finished_one(s
     assert store.get_ticket(child)["status"] == "in_progress"
     assert store.get_ticket(parent)["status"] == "in_progress"          # reopened so the manager can resume
 
-    done_parent = store.create_ticket({**BASE, "title": "dp", "assignee": "m"}, "top_manager")["id"]
+    done_parent = store.create_ticket({**BASE, "title": "dp", "assignee": "m"}, "director")["id"]
     store.transition(done_parent, "in_progress", "m")
     kid = store.create_ticket({**BASE, "title": "k", "assignee": "w"}, "m", parent_id=done_parent)["id"]
     store.transition(kid, "in_progress", "w")
@@ -94,7 +94,7 @@ def test_manager_reruns_a_retried_worker(store, tmp_path):
                       j(action="done", result={"fixed": True}),                # worker, after retry with guidance
                       j(action="done", result={"final": 1})])                  # manager review
     m = Manager("research_manager", store, p, cfg, tmp_path, "role", ["m"], ["w"])
-    top = store.create_ticket({**BASE, "title": "Top", "assignee": "research_manager"}, "top_manager")["id"]
+    top = store.create_ticket({**BASE, "title": "Top", "assignee": "research_manager"}, "director")["id"]
     assert m.work(top)["status"] == "escalated"
     kid = store.list_tickets(parent_id=top)[0]["id"]
     actions.retry(store, kid, "use the other approach", "human")               # reopens child + parent
@@ -150,12 +150,12 @@ def test_watch_flags_pending_work_with_no_run_and_timeout(tmp_path):
 
 
 
-def test_watch_does_not_report_the_top_managers_own_cancellations(tmp_path):
+def test_watch_does_not_report_the_directors_own_cancellations(tmp_path):
     ctl = make_ctl(tmp_path)
     spec = dict(department="research", context="c", acceptance_criteria=["a"], return_spec={"format": "f", "description": "d"})
     mine = ctl.create({**spec, "title": "Obsolete"})["ticket_id"]
     other = ctl.create({**spec, "title": "Stopped by the human"})["ticket_id"]
-    ctl.cancel(mine, "priorities changed")                                      # the top manager's own decision
+    ctl.cancel(mine, "priorities changed")                                      # the director's own decision
     actions.cancel(ctl.store, other, "not needed", "human")                     # someone else's: that is news
     import os
     ctl.lock_path.write_text(str(os.getpid()))
@@ -208,8 +208,8 @@ def test_dashboard_answer_cancel_errors_and_no_double_launch(store, tmp_path):
 def test_dashboard_state_has_why_level_and_run_flag(store, tmp_path):
     e = escalated(store, note="sensor offline")
     q = asking(store, "what rate?")
-    store.handoff(e, "top_manager", "sensor is offline; only you can power-cycle it")
-    store.handoff(q, "top_manager")
+    store.handoff(e, "director", "sensor is offline; only you can power-cycle it")
+    store.handoff(q, "director")
     s = TestClient(create_app(tmp_path / "orchestrator.db", load_config(None), project=tmp_path),
                    base_url="http://127.0.0.1").get("/api/state").json()
     by = {n["id"]: n for n in s["needs_human"]}

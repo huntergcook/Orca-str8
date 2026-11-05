@@ -35,7 +35,7 @@ def test_file_tools_confined(store, tmp_path):
     assert b.call("read_file", {"path": "work/a.py"})["content"] == "print(1)"
     assert "escapes" in b.call("read_file", {"path": "../secret"})["error"]
     assert "escapes" in b.call("write_file", {"path": "../x.py", "content": ""})["error"]
-    for protected in ("memory/top_manager/state.md", "orchestrator.db", "PAUSE", "jobs/x/log.txt"):
+    for protected in ("memory/director/state.md", "orchestrator.db", "PAUSE", "jobs/x/log.txt"):
         assert "managed by the orchestrator" in b.call("write_file", {"path": protected, "content": "x"})["error"]
 
 

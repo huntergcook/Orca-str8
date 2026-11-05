@@ -61,7 +61,7 @@ def store(tmp_path):
 
 
 def top(store, assignee="research_manager", title="Survey"):
-    return store.create_ticket({**SPEC, "title": title, "assignee": assignee, "worker_role": "worker"}, "top_manager")["id"]
+    return store.create_ticket({**SPEC, "title": title, "assignee": assignee, "worker_role": "worker"}, "director")["id"]
 
 
 # ------------------------------------------------------------------------- parallelism
@@ -76,7 +76,7 @@ def test_workers_in_a_department_run_in_parallel(store, tmp_path):
     assert elapsed < 0.4 * 6                                     # sequential would be ~6 calls x 0.4s
 
 
-def test_departments_run_in_parallel_through_the_top_manager(tmp_path):
+def test_departments_run_in_parallel_through_the_director(tmp_path):
     cfg = load_config(None)
     cfg["departments"] = {"research": {}, "tooling": {}, "verification": {}}
     p = Probe(delay=0.4, lead=lambda first, msgs: j(action="done", result={"report": "done directly"}))
@@ -204,7 +204,7 @@ def test_role_names_are_normalized(store, tmp_path):
 
 # ------------------------------------------------------- speaking up, no holes, autonomy
 
-def test_worker_follow_ups_reach_the_manager_and_its_follow_ups_reach_the_top_manager(tmp_path):
+def test_worker_follow_ups_reach_the_manager_and_its_follow_ups_reach_the_director(tmp_path):
     cfg = load_config(None)
     cfg["departments"] = {"research": {}}
     p = Probe(delay=0, worker=lambda first, msgs: j(action="done", result={"summary": "ok",
@@ -245,7 +245,7 @@ def test_a_worker_can_file_work_for_another_department_and_it_runs_in_the_same_r
     assert titles["Build a serial logger"]["assignee"] == "tooling_manager"
     assert titles["Build a serial logger"]["status"] == "done"                        # picked up in the same run
     req = ctl.store.get_ticket(titles["Build a serial logger"]["id"])
-    assert req["cc"] == ["top_manager"] and "research needs to capture serial traffic" in req["context"]
+    assert req["cc"] == ["director"] and "research needs to capture serial traffic" in req["context"]
     ctl.close()
 
 
@@ -317,7 +317,7 @@ def test_cancelling_a_running_ticket_stops_its_manager_and_workers(store, tmp_pa
     th = threading.Thread(target=lambda: out.setdefault("t", m.work(tid)))
     th.start()
     assert started.wait(5)
-    r = cancel(store, tid, "priorities changed", "top_manager")
+    r = cancel(store, tid, "priorities changed", "director")
     assert r["status"] == "cancelled" and len(r["also_cancelled"]) == 4         # the cascade reached every worker
     th.join(10)
     assert not th.is_alive() and out["t"]["status"] == "cancelled"
@@ -372,7 +372,7 @@ def test_claim_resource_can_wait_for_a_busy_resource(store, tmp_path):
     assert r["ok"] and r["claimed"] == "rig" and time.monotonic() - t0 < 6
 
 
-# ------------------------------------------------------------------------- the top manager picks models per ticket
+# ------------------------------------------------------------------------- the director picks models per ticket
 
 def test_models_chosen_on_a_ticket_apply_to_its_manager_and_all_workers_below(tmp_path):
     cfg = load_config(None)
@@ -400,7 +400,7 @@ def test_models_chosen_on_a_ticket_apply_to_its_manager_and_all_workers_below(tm
     ctl.close()
 
 
-def test_cross_department_requests_can_wait_for_the_top_managers_approval(store, tmp_path):
+def test_cross_department_requests_can_wait_for_the_directors_approval(store, tmp_path):
     from orchestrator import actions
     asker = top(store)
     box = ToolBox(tmp_path, "research_manager", store=store, ticket_id=asker,
@@ -408,8 +408,8 @@ def test_cross_department_requests_can_wait_for_the_top_managers_approval(store,
     r = box.call("request_work", {"department": "software", "title": "build X", "need": "X is missing"})
     assert r["ok"] and "proposed" in r["note"]
     t = store.get_ticket(r["ticket_id"])
-    assert t["status"] == "escalated" and t["escalation"]["to"] == "top_manager" and t["escalation"]["kind"] == "proposal"
-    assert actions.retry(store, t["id"], "approved", "top_manager")["status"] == "in_progress"     # approve
+    assert t["status"] == "escalated" and t["escalation"]["to"] == "director" and t["escalation"]["kind"] == "proposal"
+    assert actions.retry(store, t["id"], "approved", "director")["status"] == "in_progress"     # approve
 
 
 # ------------------------------------------------------------------------- a model out of quota is skipped, not fatal
@@ -507,8 +507,8 @@ def test_cancel_frees_hardware_once_no_job_of_the_ticket_is_running(store, tmp_p
     try:
         store.create_job(busy, "w2", "long", ["x"], str(tmp_path / "log.txt"), resource="pc", pid=proc.pid,
                          job_id="j1", pid_started=psutil.Process(proc.pid).create_time())
-        assert actions.cancel(store, idle, "no longer needed", "top_manager")["released"] == ["rig"]
-        assert actions.cancel(store, busy, "no longer needed", "top_manager")["released"] == []   # its job still runs
+        assert actions.cancel(store, idle, "no longer needed", "director")["released"] == ["rig"]
+        assert actions.cancel(store, busy, "no longer needed", "director")["released"] == []   # its job still runs
         state = {r["name"]: r["state"] for r in store.list_resources()}
         assert state == {"rig": "free", "pc": "busy"}
     finally:
