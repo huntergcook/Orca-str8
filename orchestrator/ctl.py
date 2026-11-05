@@ -145,6 +145,19 @@ class Ctl:
 
     # ------------------------------------------------------------------ acting
 
+    def department(self, action: str, name: str = "", mission: str = "") -> dict[str, Any]:
+        """List departments, or create/retire one. Departments the director creates are saved in workspace/departments.json."""
+        try:
+            if action == "create":
+                self.director.add_department(name, mission)
+            elif action == "retire":
+                self.director.retire_department(name)
+        except ValueError as e:
+            raise StoreError(str(e)) from None
+        return {"departments": {d: {"mission": (self.cfg["departments"].get(d) or {}).get("mission", ""),
+                                    "created_by": (self.cfg["departments"].get(d) or {}).get("created_by", "config")}
+                                for d in self.director.managers}}
+
     def intake(self, answers: list[tuple[str, str]] | None = None, scaffold: bool = False) -> dict[str, Any]:
         """The mission brief: what is still unanswered, and a way to record the human's answers durably. The director
         asks the human the unanswered questions (one to three at a time, pushing back on vague answers) and records
@@ -575,6 +588,10 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
     w.add_argument("--grace", type=float, default=10)
     s = sub.add_parser("state")
     s.add_argument("--set", action="store_true", help="replace state notes with stdin")
+    dp = sub.add_parser("department", help="list departments, or create/retire one (the work decides the team)")
+    dp.add_argument("action", nargs="?", default="list", choices=["list", "create", "retire"])
+    dp.add_argument("name", nargs="?", default="")
+    dp.add_argument("mission", nargs="?", default="")
     it = sub.add_parser("intake", help="the mission brief: list unanswered questions, record the human's answers")
     it.add_argument("--answer", nargs=2, action="append", metavar=("ID", "TEXT"), help="record an answer (repeatable)")
     it.add_argument("--scaffold", action="store_true", help="create a blank brief if there is none")
@@ -644,6 +661,8 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
             out = ctl.release_resource(a.name, a.reason)
         elif a.cmd == "set-models":
             out = ctl.set_models(a.id, a.manager, a.worker)
+        elif a.cmd == "department":
+            out = ctl.department(a.action, a.name, a.mission)
         elif a.cmd == "intake":
             out = ctl.intake([tuple(x) for x in (a.answer or [])], a.scaffold)
         elif a.cmd == "finish":

@@ -5,6 +5,8 @@ never from an accumulating chat transcript, so long sessions don't need compacti
 """
 from __future__ import annotations
 
+import json
+import re
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -19,6 +21,7 @@ from .limits import Halted
 from .memory import Memory, human_log
 from .providers import Provider, usable
 from .store import Store
+from .util import atomic_write
 from .verification import Verifier
 
 TOP_PROTOCOL = """\
@@ -33,6 +36,8 @@ Reply with exactly one JSON object:
      {"type": "answer_ticket", "ticket_id": "...", "text": "<answer to a question a manager is blocked on>"},
      {"type": "retry_ticket", "ticket_id": "...", "text": "<guidance for the retry>"},
      {"type": "cancel_ticket", "ticket_id": "...", "text": "<why>"},
+     {"type": "create_department", "name": "<snake_case>", "mission": "<what it is for and what it owns>"},
+     {"type": "retire_department", "name": "<a department you created, with no unfinished tickets>"},
      {"type": "assume", "text": "<an assumption you made instead of asking the human; they can overturn it later>"},
      {"type": "ask_human", "question": "<only a question that truly needs the human; work continues meanwhile>"},
      {"type": "finish", "summary": "<why the goal is sufficiently met>"}]}
@@ -55,29 +60,97 @@ class Director:
         self.finish_gate: Any = None              # daemon: callable -> (ok, reason); a finish only counts if ok
         self.finish_rejection: str | None = None  # why the last finish request was refused (fed to the next turn)
         self.notify: Any = None                   # daemon: callable(level, title, body)
-        mgr_models, wrk_models = model_chain(cfg, "manager"), model_chain(cfg, "worker")
+        self._mgr_models, self._wrk_models = model_chain(cfg, "manager"), model_chain(cfg, "worker")
         self.jobs = JobRunner(store, workspace)
         vcfg = cfg["verification"]
-        verifier_models = list(vcfg.get("verifier_models") or []) or mgr_models
-        verifier = Verifier(store, provider, cfg, workspace, verifier_models) if vcfg.get("enabled") else None
+        self._verifier_models = list(vcfg.get("verifier_models") or []) or self._mgr_models
+        self._verifier = Verifier(store, provider, cfg, workspace, self._verifier_models) if vcfg.get("enabled") else None
         self.managers: dict[str, Manager] = {}
+        self.dynamic_path = self.workspace / "departments.json"
+        for dept, spec in self._load_dynamic().items():       # departments the director created in earlier runs
+            cfg["departments"].setdefault(dept, spec)
         departments = {dept: f"{dept}_manager" for dept in cfg["departments"]}
         for dept, spec in cfg["departments"].items():
-            role_path = Path(spec.get("manager_role", ""))
-            found = next((c for c in (Path.cwd() / role_path, ROLES_DIR.parent / role_path)
-                          if role_path.name and c.is_file()), None)       # project file first, then built-in
-            role = found.read_text(encoding="utf-8") if found else load_role("department_manager.template").replace(
-                "{{DEPARTMENT}}", dept).replace("{{DEPARTMENT_MISSION}}", spec.get("mission", dept))
-            is_verification = dept == "verification"
-            diverse = bool(spec.get("diverse_models", False)) and len(verifier_models) > 1
-            self.managers[dept] = Manager(f"{dept}_manager", store, provider, cfg, workspace, role,
-                                          mgr_models, verifier_models if diverse else wrk_models,
-                                          can_acquire_tools=bool(spec.get("can_acquire_tools", False)),
-                                          can_use_hardware=bool(spec.get("resource_leases", False)),
-                                          jobs=self.jobs,
-                                          verifier=None if is_verification else verifier,
-                                          diverse_workers=diverse, writes_code=spec.get("writes_code"),
-                                          departments=departments)
+            self.managers[dept] = self._make_manager(dept, spec, departments)
+
+    # ------------------------------------------------------------------ departments (fixed by config, or made by the director)
+
+    DEPT_NAME = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
+
+    def _make_manager(self, dept: str, spec: dict[str, Any], departments: dict[str, str]) -> Manager:
+        role_path = Path(spec.get("manager_role", ""))
+        found = next((c for c in (Path.cwd() / role_path, ROLES_DIR.parent / role_path)
+                      if role_path.name and c.is_file()), None)       # project file first, then built-in
+        role = found.read_text(encoding="utf-8") if found else load_role("department_manager.template").replace(
+            "{{DEPARTMENT}}", dept).replace("{{DEPARTMENT_MISSION}}", spec.get("mission", dept))
+        diverse = bool(spec.get("diverse_models", False)) and len(self._verifier_models) > 1
+        return Manager(f"{dept}_manager", self.store, self.provider, self.cfg, self.workspace, role,
+                       self._mgr_models, self._verifier_models if diverse else self._wrk_models,
+                       can_acquire_tools=bool(spec.get("can_acquire_tools", False)),
+                       can_use_hardware=bool(spec.get("resource_leases", False)),
+                       jobs=self.jobs, verifier=None if dept == "verification" else self._verifier,
+                       diverse_workers=diverse, writes_code=spec.get("writes_code"), departments=departments)
+
+    def _load_dynamic(self) -> dict[str, dict[str, Any]]:
+        try:
+            data = json.loads(self.dynamic_path.read_text(encoding="utf-8"))
+            return {k: v for k, v in data.items() if isinstance(v, dict) and self.DEPT_NAME.match(k)}
+        except (OSError, ValueError, AttributeError):
+            return {}
+
+    def add_department(self, name: str, mission: str, **flags: Any) -> str:
+        """The director creates a department when the work calls for a different kind of team (for example `gpu_profiling`,
+        `reverse_engineering`, `documentation`). It is saved in workspace/departments.json, so it survives restarts, and its
+        manager starts working on tickets at once. `writes_code` and `can_acquire_tools` are honoured unless the config
+        turns them off (`policies.dynamic_department_privileges: false`); `resource_leases` (physical hardware) is never
+        granted to a department the director made: the human declares hardware and the departments that may touch it.
+        Returns the department name."""
+        name = str(name).strip().lower().replace("-", "_").replace(" ", "_")
+        if not self.DEPT_NAME.match(name):
+            raise ValueError(f"department name must be lowercase letters, digits and underscores (2-31 chars): {name!r}")
+        if name in self.cfg["departments"]:
+            raise ValueError(f"department {name!r} already exists")
+        if not str(mission).strip():
+            raise ValueError("a department needs a mission: what it is for and what it owns")
+        limit = int(self.cfg["policies"].get("max_departments", 12))
+        if len(self.cfg["departments"]) >= limit:
+            raise ValueError(f"already {limit} departments (policies.max_departments); retire one or reuse an existing one")
+        spec: dict[str, Any] = {"mission": str(mission).strip()[:1500], "created_by": "director"}
+        privileged = ("can_acquire_tools", "writes_code", "resource_leases")
+        if self.cfg["policies"].get("dynamic_department_privileges", True):
+            spec.update({k: bool(flags[k]) for k in ("can_acquire_tools", "writes_code") if k in flags})
+        if flags.get("diverse_models"):
+            spec["diverse_models"] = True
+        dynamic = self._load_dynamic()
+        dynamic[name] = spec
+        atomic_write(self.dynamic_path, json.dumps(dynamic, indent=1))
+        self.cfg["departments"][name] = spec
+        names = {d: f"{d}_manager" for d in self.cfg["departments"]}
+        self.managers[name] = self._make_manager(name, spec, names)
+        for m in self.managers.values():                    # every manager can now file work for the new department
+            m.departments = dict(names)
+        self.store.add_event(None, "director", "department_created", {"name": name, "mission": spec["mission"][:300],
+                                                                      "privileges_ignored": [k for k in privileged if k in flags and k not in spec]})
+        self.memory.append_journal(f"CREATED DEPARTMENT {name}: {spec['mission']}")
+        return name
+
+    def retire_department(self, name: str) -> None:
+        """Remove a department the director created, once it has no unfinished tickets. Its notes and finished work stay."""
+        dynamic = self._load_dynamic()
+        if name not in dynamic:
+            raise ValueError(f"{name!r} was not created by the director (config departments are the human's)")
+        m = self.managers.get(name)
+        if m and any(t["status"] not in ("done", "failed", "cancelled")
+                     for t in self.store.list_tickets(assignee=m.name)):
+            raise ValueError(f"{name!r} still has unfinished tickets; cancel or finish them first")
+        dynamic.pop(name)
+        atomic_write(self.dynamic_path, json.dumps(dynamic, indent=1))
+        self.cfg["departments"].pop(name, None)
+        self.managers.pop(name, None)
+        names = {d: f"{d}_manager" for d in self.cfg["departments"]}
+        for mm in self.managers.values():
+            mm.departments = dict(names)
+        self.store.add_event(None, "director", "department_retired", {"name": name})
 
     # ------------------------------------------------------------------ context
 
@@ -182,6 +255,11 @@ class Director:
             actions.retry(self.store, str(a["ticket_id"]), str(a.get("text", "")), "director")
         elif kind == "cancel_ticket":
             actions.cancel(self.store, str(a["ticket_id"]), str(a.get("text", "")), "director")
+        elif kind == "create_department":
+            self.add_department(str(a.get("name", "")), str(a.get("mission", "")),
+                                **{k: a[k] for k in ("can_acquire_tools", "writes_code", "resource_leases", "diverse_models") if k in a})
+        elif kind == "retire_department":
+            self.retire_department(str(a.get("name", "")))
         elif kind == "assume":
             text = str(a.get("text", "")).strip()
             self.memory.append_journal(f"ASSUMPTION (human not consulted): {text}")

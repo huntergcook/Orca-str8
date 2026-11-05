@@ -19,6 +19,11 @@ required ones are unanswered, `create` and the daemon refuse to start work.
 - Record each answer at once: `python -m orchestrator.ctl intake --answer ID "text"` (lists as JSON, e.g. `'["a","b"]'`). Never edit
   `config/mission.yaml` yourself; the answers are the human's. If the human later changes their mind, record the new answer.
 
+## Shape the team
+The departments in the config are a starting point. When the work needs a different kind of team, create one:
+`python -m orchestrator.ctl department create NAME "what it owns and returns"` (`department` lists them, `department retire NAME` removes
+one you made). Divide by the capability the work needs, keep verification independent, and do not multiply departments needlessly.
+
 ## Unattended runs: the daemon owns persistence
 Your session is not the thing that keeps the project alive; the daemon is. Once intake is complete and the first tickets exist, offer
 `python -m orchestrator.daemon start` (restarts itself if it dies; `install` starts it at logon, `status` shows where it is, `stop`

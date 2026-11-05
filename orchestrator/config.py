@@ -58,6 +58,8 @@ DEFAULTS: dict[str, Any] = {
         "default_rigor": "balanced",
         "verification_is_advisory": True,
         # persistence (daemon): how hard the harness tries before it gives up or bothers the human
+        "max_departments": 12,         # departments the director may have in total (config + ones it creates)
+        "dynamic_department_privileges": True,   # departments the director creates may write code / acquire tools (never hardware)
         "max_restarts": 6,             # times a stopped/crashed manager ticket is restarted before it is escalated
         "restart_backoff_seconds": 5,  # doubles per restart, capped at 10 minutes
         "daemon_poll_seconds": 10,     # idle loop sleep

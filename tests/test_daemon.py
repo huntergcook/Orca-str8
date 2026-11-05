@@ -292,3 +292,50 @@ def test_status_reports_without_a_running_daemon(tmp_path):
     d, _, _ = daemon(tmp_path, [])
     st = d.status()
     assert st["phase"] == "not started" and st["supervisor_alive"] is False and st["mission"]["complete"] is True
+
+
+# ------------------------------------------------------------------ departments the director creates
+
+def test_the_director_can_create_a_department_that_works_and_survives_a_restart(tmp_path):
+    cfg = cfg_for(tmp_path)
+    dept = dict(type="create_department", name="Reverse Engineering", mission="owns binary analysis",
+                writes_code=True, resource_leases=True)
+    script = [j(say="new team", actions=[dept, {**TICKET, "department": "reverse_engineering", "title": "Map the renderer"}]),
+              j(action="delegate", tickets=[WORKER]), j(action="done", result={}), j(action="done", result={"mapped": 1})]
+    ctl = Ctl(cfg, cfg["workspace"], MockProvider(script))
+    ctl.director.event_turn("start", "plan")
+    assert "reverse_engineering" in ctl.director.managers
+    spec = cfg["departments"]["reverse_engineering"]
+    assert spec["writes_code"] is True and "resource_leases" not in spec           # hardware is never granted
+    assert ctl.director.managers["research"].departments["reverse_engineering"] == "reverse_engineering_manager"    # others can file work for it
+    ctl.run()
+    assert [t["status"] for t in ctl.store.list_tickets() if t["parent_id"] is None] == ["done"]
+    ctl.close()
+    cfg2 = cfg_for(tmp_path / "again")                  # a fresh process, same workspace: the department is still there
+    cfg2["workspace"] = cfg["workspace"]
+    ctl2 = Ctl(cfg2, cfg["workspace"], MockProvider([]))
+    assert "reverse_engineering" in ctl2.director.managers
+    ctl2.close()
+
+
+def test_bad_departments_are_refused_and_retiring_needs_an_idle_one(tmp_path):
+    cfg = cfg_for(tmp_path)
+    cfg["policies"]["max_departments"] = 2
+    ctl = Ctl(cfg, cfg["workspace"], MockProvider([]))
+    with pytest.raises(ValueError, match="already exists"):
+        ctl.director.add_department("research", "x")
+    with pytest.raises(ValueError, match="name"):
+        ctl.director.add_department("Bad/Name!", "x")
+    with pytest.raises(ValueError, match="mission"):
+        ctl.director.add_department("docs", "  ")
+    ctl.director.add_department("docs", "writes the docs")
+    with pytest.raises(ValueError, match="retire one"):
+        ctl.director.add_department("third", "x")
+    with pytest.raises(ValueError, match="human's"):
+        ctl.director.retire_department("research")
+    ctl.create(dict(department="docs", title="t", context="c", acceptance_criteria=["a"],
+                    return_spec={"format": "f", "description": "d"}))
+    with pytest.raises(ValueError, match="unfinished"):
+        ctl.director.retire_department("docs")
+    assert "docs" in ctl.department("list")["departments"]
+    ctl.close()
