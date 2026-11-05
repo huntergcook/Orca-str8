@@ -655,3 +655,24 @@ def test_a_delegation_with_an_unrunnable_acceptance_command_is_sent_back_before_
     assert store.list_tickets(parent_id=t["id"]) == []                        # nothing was delegated
     assert any("cannot run as written" in u for u in first)                   # the manager was told why
     store.close()
+
+
+# ------------------------------------------------------------------------- direct edits on integration are checked
+
+def test_direct_edits_on_integration_must_pass_the_checks_before_release(repo, repo_dir):
+    fix(repo)
+    repo.commit_all("T1", "fix add")
+    repo.merge_to_integration("T1", "merge T1", checks=[PYTEST_CMD])
+    assert repo.integration_verified()                                        # the checks passed at this commit
+    wt = repo.integration_path()
+    (wt / "src" / "calc.py").write_text("def add(a, b):\n    return a * b\n")  # a manager's direct edit breaks it
+    git(wt, "-c", "user.name=m", "-c", "user.email=m@m", "commit", "-qam", "manager edit")
+    assert not repo.integration_verified()
+    v = repo.verify_integration([PYTEST_CMD])
+    assert not v["ok"] and not repo.integration_verified()
+    with pytest.raises(CodeError, match="fails its checks"):
+        repo.release("release", checks=[PYTEST_CMD])
+    (wt / "src" / "calc.py").write_text(FIXED)
+    git(wt, "-c", "user.name=m", "-c", "user.email=m@m", "commit", "-qam", "manager fix")
+    assert repo.verify_integration([PYTEST_CMD])["ok"] and repo.integration_verified()
+    assert repo.release("release", checks=[PYTEST_CMD])["merge_commit"]

@@ -621,6 +621,21 @@ class Manager:
             if d.get("action") == "integrate":
                 self._integrate(ticket_id, d)
                 continue
+            if d.get("action") == "done" and self.writes_code and self.code_repo is not None:
+                # edits the manager made directly on the integration branch never ran the integration checks
+                ccfg = self.cfg.get("code") or {}
+                if not self.code_repo.integration_verified():
+                    self._status(ticket_id, "checking", "running the integration checks on your edits")
+                    v = self.code_repo.verify_integration(list(ccfg.get("integration_checks") or []),
+                                                          float(ccfg.get("test_timeout", 600)))
+                    if not v["ok"]:
+                        self._notice[ticket_id] = (
+                            "You cannot finish yet: the integration branch FAILS its checks after your direct edits. "
+                            "Fix it with your branch tools on \"integration\" (branch_read / branch_edit / branch_run), "
+                            "then finish. Failures: " + " | ".join(f"{x['name']} -> {x['detail'][-600:]}"
+                                                                 for x in v["results"] if not x["ok"]))
+                        self.memory.append_journal(f"[{ticket_id}] integration checks failed after manager edits")
+                        continue
             if d.get("action") == "done" and self._pending_branches(ticket_id):
                 waiting = ", ".join(c["id"] for c in self._pending_branches(ticket_id))
                 self._notice[ticket_id] = (f"You cannot finish yet: these worker branches are still awaiting YOUR review: {waiting}. "

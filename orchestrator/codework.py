@@ -236,6 +236,42 @@ class CodeRepo:
                 "ahead": int(_git(["rev-list", "--count", span], self.repo).strip() or 0), "commits": commits,
                 "diffstat": _git(["diff", "--stat", f"{self.base_branch}...{self.integration_branch}"], self.repo).strip()}
 
+    _VERIFIED_KEY = "orchestrator.verifiedintegration"
+
+    def _integration_head(self) -> str | None:
+        if not self._branch_exists(self.integration_branch):
+            return None
+        return _git(["rev-parse", self.integration_branch], self.repo).strip()
+
+    def integration_verified(self) -> bool:
+        """True when the integration branch's checks passed at exactly its current commit. A manager's direct edit
+        (or anything else that moves the branch without running the checks) makes it unverified."""
+        head = self._integration_head()
+        if head is None:
+            return True
+        r = subprocess.run(["git", "config", "--local", "--get", self._VERIFIED_KEY], cwd=str(self.repo),
+                           capture_output=True, text=True)
+        return r.returncode == 0 and r.stdout.strip() == head
+
+    def _mark_verified(self) -> None:
+        head = self._integration_head()
+        if head:
+            _git(["config", "--local", self._VERIFIED_KEY, head], self.repo)
+
+    @_locked
+    def verify_integration(self, checks: list[str] | None, timeout: float = 600) -> dict[str, Any]:
+        """Run the integration checks on the integration branch as it is now; on success remember that commit as
+        verified. Returns {ok, results}; nothing is undone (a failure is for whoever edited it to fix)."""
+        if self._integration_head() is None:
+            return {"ok": True, "results": []}
+        if self.integration_verified():
+            return {"ok": True, "results": [], "note": "already verified at this commit"}
+        results = run_commands(list(checks or []), self.ensure_integration(), timeout)
+        ok = all(x["ok"] for x in results)
+        if ok:
+            self._mark_verified()
+        return {"ok": ok, "results": results}
+
     @_locked
     def merge_to_integration(self, ticket_id: str, message: str, checks: list[str] | None = None,
                              timeout: float = 600) -> dict[str, Any]:
@@ -258,15 +294,17 @@ class CodeRepo:
             raise CodeError("integration checks failed on the merged result, so the merge was undone: "
                             + "; ".join(f"{x['name']} -> {x['detail'][:300]}" for x in failed))
         sha = _git(["rev-parse", "--short", "HEAD"], wt).strip()
+        self._mark_verified()                     # the checks just passed on this exact merge commit
         wtp = self.worktree_path(ticket_id)
         if wtp.exists():                                              # the branch stays (reviewers can still read the patch)
             _git(["worktree", "remove", "--force", str(wtp)], self.repo, check=False)
         return {"merge_commit": sha, "checks": results}
 
     @_locked
-    def release(self, message: str) -> dict[str, Any]:
+    def release(self, message: str, checks: list[str] | None = None, timeout: float = 600) -> dict[str, Any]:
         """Merge the integration branch into the base branch, then clean up. Refuses unless the repository is on the
-        base branch with no uncommitted changes to tracked files; aborts cleanly on conflict."""
+        base branch with no uncommitted changes to tracked files, and unless the integration checks pass on what is
+        being released; aborts cleanly on conflict."""
         current = _git(["rev-parse", "--abbrev-ref", "HEAD"], self.repo).strip()
         if current != self.base_branch:
             raise CodeError(f"the repository is on '{current}', not '{self.base_branch}'; switch back before releasing")
@@ -275,6 +313,11 @@ class CodeRepo:
         status = self.integration_status()
         if not status["ahead"]:
             raise CodeError("nothing to release: the integration branch has no commits beyond the base branch")
+        if checks:
+            v = self.verify_integration(checks, timeout)
+            if not v["ok"]:
+                raise CodeError("the integration branch fails its checks, so nothing was released: "
+                                + "; ".join(f"{x['name']} -> {x['detail'][:300]}" for x in v["results"] if not x["ok"]))
         r = subprocess.run(["git", *GIT_ID, "merge", "--no-ff", "-m", message, self.integration_branch], cwd=str(self.repo),
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode != 0:

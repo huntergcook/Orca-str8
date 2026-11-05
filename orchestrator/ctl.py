@@ -361,7 +361,10 @@ class Ctl:
         """Merge the integration branch into the base branch (the repository must be on it, with no uncommitted
         changes to tracked files)."""
         repo = self._repo()
-        out = repo.release(f"Release integration ({repo.integration_status()['ahead']} commits) into {repo.base_branch}")
+        ccfg = self.cfg.get("code") or {}
+        out = repo.release(f"Release integration ({repo.integration_status()['ahead']} commits) into {repo.base_branch}",
+                           checks=list(ccfg.get("integration_checks") or []),
+                           timeout=float(ccfg.get("test_timeout", 600)))
         self.store.add_event(None, "top_manager", "code_released", out)
         return out
 
