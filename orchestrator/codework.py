@@ -12,6 +12,8 @@ A passing branch is NOT merged: a human or the top manager reviews it (`ctl code
 """
 from __future__ import annotations
 
+import fnmatch
+
 import functools
 import os
 import re
@@ -39,6 +41,28 @@ class CodeError(Exception):
 
 
 # ----------------------------------------------------------------------------- globs
+
+
+# Never committed from a worktree, even when the project's .gitignore misses them (a worker may configure a build in
+# build64/ or similar). Matched against each staged path with fnmatch; directories match by any path component.
+BUILD_OUTPUT_DIRS = ("build*", "out", "CMakeFiles", "x64", "Win32", "Release", "Debug", "__pycache__", ".pytest_cache")
+BUILD_OUTPUT_FILES = ("*.obj", "*.exe", "*.pdb", "*.ilk", "*.tlog", "*.lastbuildstate", "*.recipe", "CMakeCache.txt",
+                      "*.pyc", "*.dll", "*.lib", "*.exp")
+
+
+def is_build_output(path: str) -> bool:
+    parts = path.replace("\\", "/").split("/")
+    return (any(fnmatch.fnmatch(p, pat) for p in parts[:-1] for pat in BUILD_OUTPUT_DIRS)
+            or any(fnmatch.fnmatch(parts[-1], pat) for pat in BUILD_OUTPUT_FILES))
+
+
+def unstage_build_output(root: Path) -> list[str]:
+    """Unstage build output that `git add -A` picked up; returns what was dropped."""
+    staged = [p for p in _git(["diff", "--cached", "--name-only", "--diff-filter=A"], root).splitlines() if p.strip()]
+    drop = [p for p in staged if is_build_output(p)]
+    for k in range(0, len(drop), 100):
+        _git(["rm", "-r", "-q", "--cached", "--", *drop[k:k + 100]], root)
+    return drop
 
 def _glob_re(pattern: str) -> re.Pattern[str]:
     pat, i, out = pattern.replace("\\", "/"), 0, ""
@@ -281,7 +305,8 @@ class CodeRepo:
     def commit_all(self, ticket_id: str, message: str) -> str | None:
         wt = self.worktree_path(ticket_id)
         _git(["add", "-A"], wt)
-        if not _git(["status", "--porcelain"], wt).strip():
+        self.last_dropped = unstage_build_output(wt)    # newly added build output never reaches a branch
+        if not _git(["diff", "--cached", "--name-only"], wt).strip():
             return None
         _git([*GIT_ID, "commit", "-q", "-m", message], wt)
         return _git(["rev-parse", "--short", "HEAD"], wt).strip()

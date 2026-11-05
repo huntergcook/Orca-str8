@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from .codework import GIT_ID, CodeSpec, CodeToolBox, _git, run_commands
+from .codework import GIT_ID, CodeSpec, CodeToolBox, _git, run_commands, unstage_build_output
 from .tools import ToolBox, ToolError
 
 BRANCH_TOOLS = ("branch_list", "branch_read", "branch_search", "branch_edit", "branch_write", "branch_test", "branch_run")
@@ -56,7 +56,8 @@ class ManagerToolBox(ToolBox):
         if tid != "integration":
             return
         _git(["add", "-A"], root)
-        if _git(["status", "--porcelain"], root).strip():
+        unstage_build_output(root)
+        if _git(["diff", "--cached", "--name-only"], root).strip():
             _git([*GIT_ID, "commit", "-q", "-m", f"{self.actor}: {what}"], root)
 
     def _t_branch_list(self, a: dict[str, Any]) -> dict[str, Any]:

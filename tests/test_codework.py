@@ -600,3 +600,12 @@ def test_the_scaffold_includes_a_software_department(tmp_path):
     root = Path(__file__).resolve().parents[1] / "roles"
     assert "Software Manager" in (root / "software_manager.md").read_text(encoding="utf-8")
     assert (root / "workers" / "code_worker.md").exists()
+
+
+def test_build_output_a_worker_created_is_never_committed():
+    from orchestrator.codework import is_build_output
+    for p in ("build64/CMakeCache.txt", "build64/Release/nvvr_vrhost.exe", "plugin/x64/Release/a.obj",
+              "src/__pycache__/m.cpython-312.pyc", "out/x.txt", "tools/foo.exe"):
+        assert is_build_output(p), p
+    for p in ("plugin/src/perf.cpp", "tools/perf_report.py", "README.md", "builders.md", "src/release_notes.txt"):
+        assert not is_build_output(p), p
