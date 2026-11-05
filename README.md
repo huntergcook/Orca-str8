@@ -396,3 +396,14 @@ Tooling department downloads into a project keep their own licenses, which are r
 - **Tracing.** `trace: {file: true, otlp_endpoint: http://localhost:4318}` exports every event as an OTLP/JSON span (one trace
   per top-level ticket) to `workspace/traces.jsonl` and/or an OTLP collector. Compatibility with specific backends (Langfuse,
   Phoenix, Laminar) is expected from the OTLP format but not verified here.
+
+## The director speaks for you
+The director decides high-level questions on your behalf from the mission brief (including the new `decision_authority`
+question, where you list what stays yours). Each call is recorded with the `decide` action in `workspace/DECISIONS.md` with its
+basis in the brief, and fed back into the director's prompt so it stays consistent. The human is only pulled in for safety,
+spending or irreversible actions beyond the brief, reserved items, refusals, or contradictions in the brief.
+
+## Resource-aware parallelism and model routing
+`policies.min_free_memory_mb` and `max_cpu_load` halve (or drop to 1) concurrent tickets when the machine is short of RAM or CPU
+(`parallelism_reduced` event); it recovers on its own. `outcome_routing` demotes a worker model with a clearly poor record in a
+department (needs `routing_min_samples` outcomes); the scorecard is in `ctl board`.

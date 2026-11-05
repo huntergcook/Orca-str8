@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import actions, critical_path
+from . import actions, critical_path, routing
 from .codework import CodeError, CodeRepo, code_repo_from_cfg, rework_spec
 from .config import enter_project, load_config, model_chain
 from .hardware import hardware_brief
@@ -118,6 +118,7 @@ class Ctl:
                 "agents": live, "quiet_agents": [x for x in live if x["quiet"]],
                 "managers_handling": [{k: i[k] for k in ("id", "title", "status", "why")} for i in handled_below],
                 "follow_ups": follow_ups, "team": team,
+                "model_scorecard": routing.scorecard(self.store),
                 "critical_path": critical_path.analyze(self.store, int(self.cfg["policies"].get("max_parallel_tickets", 8))),
                 "halted": self._halt_reason(), "run_active": self.run_active()}
 

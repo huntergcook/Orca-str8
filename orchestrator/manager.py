@@ -13,7 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
-from . import actions, learnings
+from . import actions, learnings, routing
 from .agent import as_result, as_tool_call, compact, parse_reply, run_ticket, ticket_prompt
 from .codework import (CodeError, CodeSpec, CodeToolBox, branch_state, code_repo_from_cfg, format_gate_failures,
                        glob_match, rework_spec, run_gates)
@@ -281,7 +281,14 @@ class Manager:
 
     def _models_for(self, c: dict[str, Any], index: int) -> list[str]:
         chosen = self.store.chosen_model(c["id"], "worker")
-        models = [chosen, *[m for m in self.worker_models if m != chosen]] if chosen else self.worker_models
+        base = self.worker_models
+        if self.cfg["policies"].get("outcome_routing", True) and not chosen:
+            try:
+                base = routing.reorder(base, routing.scorecard(self.store).get(self.department or "?"),
+                                       int(self.cfg["policies"].get("routing_min_samples", 5)))
+            except Exception:
+                pass
+        models = [chosen, *[m for m in base if m != chosen]] if chosen else base
         if self.diverse_workers and len(models) > 1:      # spread verifiers across models
             k = index % len(models)
             return models[k:] + models[:k]

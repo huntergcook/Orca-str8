@@ -61,6 +61,11 @@ QUESTIONS: list[dict[str, Any]] = [
     {"id": "autonomy", "required": True,
      "ask": "When you are not around, should the harness stop and wait for you, or make its best assumption and keep going?",
      "hint": "Recommended: 'assume_and_continue' for everything except safety, spending and refusals. Say what you want."},
+    {"id": "decision_authority", "required": False,
+     "ask": "How much may the director decide and speak for you? What must still be yours?",
+     "hint": "Default: the director makes every strategic call (scope trade-offs, approach, priorities, accepting results, "
+             "answering departments) as you would, from this brief, and records each in DECISIONS.md. "
+             "List anything reserved for you, e.g. spending over $X, deleting data, publishing."},
     {"id": "interrupt_only_for", "required": False,
      "ask": "What is important enough to notify you about immediately?",
      "hint": "Examples: safety issue, budget about to run out, a decision only you can make, goal met."},

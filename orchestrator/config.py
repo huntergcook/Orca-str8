@@ -60,6 +60,10 @@ DEFAULTS: dict[str, Any] = {
         # persistence (daemon): how hard the harness tries before it gives up or bothers the human
         "serial_minutes": 20,          # warn (once per chain) when the work has been a one-at-a-time chain this long; 0 = off
         "drift_review_minutes": 180,   # an independent reviewer checks the plan against the mission brief this often; 0 = off
+        "min_free_memory_mb": 1500,    # below this free RAM the harness halves (or drops to 1) parallel tickets
+        "max_cpu_load": 1.5,           # 1-min load per core above which parallelism is halved (POSIX only)
+        "outcome_routing": True,       # demote worker models with a clearly poor record in a department
+        "routing_min_samples": 5,
         "max_departments": 12,         # departments the director may have in total (config + ones it creates)
         "dynamic_department_privileges": True,   # departments the director creates may write code / acquire tools (never hardware)
         "max_restarts": 6,             # times a stopped/crashed manager ticket is restarted before it is escalated

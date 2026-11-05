@@ -60,7 +60,7 @@ def test_serial_bottleneck_event(tmp_path):
     d.notify = lambda *x: seen.append(x)
     d.oversight()
     d._serial = {k: v - 3600 for k, v in d._serial.items()}
-    d._oversight_at = 0
+    d._oversight_at = float("-inf")
     d.oversight()
     assert any(e["type"] == "serial_bottleneck" for e in ctl.store.events(None)) and seen
 
@@ -77,7 +77,7 @@ def test_charter_change_detected(tmp_path):
     ctl, cfg = mk(tmp_path, drift_review_minutes=0)
     ctl.director.oversight()
     mission.set_answer(cfg, "goal", "something else")
-    ctl.director._oversight_at = 0
+    ctl.director._oversight_at = float("-inf")
     ctl.director.oversight()
     assert any(e["type"] == "charter_changed" for e in ctl.store.events(None))
 
@@ -99,3 +99,34 @@ def test_trace_file_and_span(tmp_path):
     span = json.loads(lines[0])["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
     assert len(span["traceId"]) == 32 and len(span["spanId"]) == 16
     assert to_span({"seq": 1, "ts": "2026-01-01T00:00:00+00:00", "actor": "a", "type": "t", "payload": {}}, None)["name"] == "a:t"
+
+
+def test_parallel_cap_backs_off():
+    from orchestrator import resources
+    cfg = {"policies": {"max_parallel_tickets": 8, "min_free_memory_mb": 1000, "max_cpu_load": 1.5}}
+    assert resources.parallel_cap(cfg, mem_mb=8000, load=0.2)[0] == 8
+    assert resources.parallel_cap(cfg, mem_mb=800, load=0.2)[0] == 4
+    assert resources.parallel_cap(cfg, mem_mb=100, load=0.2)[0] == 1
+    cap, why = resources.parallel_cap(cfg, mem_mb=8000, load=3.0)
+    assert cap == 4 and "cpu" in why
+
+
+def test_routing_demotes_poor_model_only_with_evidence():
+    from orchestrator import routing
+    card = {"a": {"done": 1, "bad": 5}, "b": {"done": 5, "bad": 0}}
+    assert routing.reorder(["a", "b"], card) == ["b", "a"]
+    assert routing.reorder(["a", "b"], {"a": {"done": 0, "bad": 2}, "b": {"done": 5, "bad": 0}}) == ["a", "b"]  # too few samples
+    assert routing.reorder(["a", "b"], None) == ["a", "b"]
+
+
+def test_scorecard_from_a_store(tmp_path):
+    ctl, _ = mk(tmp_path)
+    assert ctl.board()["model_scorecard"] == {}
+
+
+def test_director_decide_action_is_logged_and_shown(tmp_path):
+    ctl, _ = mk(tmp_path)
+    ctl.director._act({"type": "decide", "decision": "drop feature Y", "basis": "not_goals", "reversible": True})
+    assert "drop feature Y" in (ctl.director.workspace / "DECISIONS.md").read_text()
+    assert "drop feature Y" in ctl.director._system_prompt()
+    assert any(e["type"] == "decision" for e in ctl.store.events(None))

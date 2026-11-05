@@ -12,7 +12,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
-from . import actions, critical_path, drift, learnings, mission, trace
+from . import actions, critical_path, drift, learnings, mission, resources, trace
 from .agent import parse_reply
 from .config import model_chain, project_rules
 from .manager import ROLES_DIR, Manager, load_role
@@ -21,7 +21,7 @@ from .limits import Halted
 from .memory import Memory, human_log
 from .providers import Provider, usable
 from .store import Store
-from .util import atomic_write
+from .util import append_durable, atomic_write
 from .verification import Verifier
 
 TOP_PROTOCOL = """\
@@ -40,6 +40,7 @@ Reply with exactly one JSON object:
      {"type": "cancel_ticket", "ticket_id": "...", "text": "<why>"},
      {"type": "create_department", "name": "<snake_case>", "mission": "<what it is for and what it owns>"},
      {"type": "retire_department", "name": "<a department you created, with no unfinished tickets>"},
+     {"type": "decide", "decision": "<a high-level call you made on the human's behalf>", "basis": "<the part of the mission brief it follows from>", "reversible": true},
      {"type": "assume", "text": "<an assumption you made instead of asking the human; they can overturn it later>"},
      {"type": "ask_human", "question": "<only a question that truly needs the human; work continues meanwhile>"},
      {"type": "finish", "summary": "<why the goal is sufficiently met>"}]}
@@ -57,7 +58,8 @@ class Director:
             legacy.rename(new)
         self.memory = Memory(workspace, "director")
         self._dep_flagged: set[str] = set()
-        self._oversight_at, self._drift_at = 0.0, time.monotonic()
+        self._cap_why = ""
+        self._oversight_at, self._drift_at = float("-inf"), time.monotonic()
         self._serial: dict[str, float] = {}
         self._serial_flagged: set[str] = set()
         if getattr(self.store, "tracer", None) is None:
@@ -185,7 +187,7 @@ class Director:
         return (f"{load_role('director')}\n\n{rules_section}# Departments\n{', '.join(self.managers) or '(none configured)'}\n\n"
                 f"# Your state notes\n{self.memory.read_state() or '(none yet)'}\n\n"
                 f"# Recent conversation with the human\n{self._tail_log()}\n\n"
-                f"{learnings.section(self.workspace)}{self._drift_note()}"
+                f"{self._decisions_note()}{learnings.section(self.workspace)}{self._drift_note()}"
                 f"# Ticket board\n{self.board()}\n\n{critical_path.analyze(self.store, int(self.cfg['policies'].get('max_parallel_tickets', 8)))['message']}\n\n{TOP_PROTOCOL}")
 
     def _ask(self, user_text: str, speaker: str) -> str:
@@ -297,6 +299,12 @@ class Director:
                 self.notify("info", "Drift review: work is off the mission", res["advice"][:400])
         return res
 
+    def _decisions_note(self) -> str:
+        p = self.workspace / "DECISIONS.md"
+        if not p.is_file():
+            return ""
+        return f"# Decisions you already made for the human (stay consistent; overturn only with reason)\n{p.read_text(encoding='utf-8')[-3000:]}\n\n"
+
     def _drift_note(self) -> str:
         p = self.workspace / "drift.json"
         if not p.is_file():
@@ -352,6 +360,13 @@ class Director:
                                 **{k: a[k] for k in ("can_acquire_tools", "writes_code", "resource_leases", "diverse_models") if k in a})
         elif kind == "retire_department":
             self.retire_department(str(a.get("name", "")))
+        elif kind == "decide":
+            d, basis = str(a.get("decision", "")).strip(), str(a.get("basis", "")).strip()
+            if d:
+                line = f"- {time.strftime('%Y-%m-%d %H:%M')} {d} (basis: {basis or 'mission brief'}; reversible: {a.get('reversible', True)})\n"
+                append_durable(self.workspace / "DECISIONS.md", line)
+                self.memory.append_journal(f"DECISION on the human's behalf: {d}")
+                self.store.add_event(None, "director", "decision", {"decision": d[:400], "basis": basis[:200]})
         elif kind == "assume":
             text = str(a.get("text", "")).strip()
             self.memory.append_journal(f"ASSUMPTION (human not consulted): {text}")
@@ -406,13 +421,17 @@ class Director:
                     actions.release_abandoned_holds(self.store, "director")   # e.g. a cancelled ticket's job ended
                 except Exception:
                     pass
-                if not halted:
+                cap, why = resources.parallel_cap(self.cfg, limit)
+                if why and why != self._cap_why:
+                    self.store.add_event(None, "director", "parallelism_reduced", {"cap": cap, "why": why})
+                self._cap_why = why
+                if not halted and len(running) < cap:
                     for m in self.managers.values():
                         for status in ("open", "in_progress"):
                             for t in self.store.list_tickets(status=status, assignee=m.name):
                                 if (t["id"] not in running and t["parent_id"] is None
                                         and time.monotonic() >= not_before.get(t["id"], 0.0)
-                                        and self._deps_ready(t)):
+                                        and len(running) < cap and self._deps_ready(t)):
                                     running[t["id"]] = pool.submit(one, m, t["id"])
                 if not halted:
                     self._watchdog(watch)
