@@ -149,6 +149,21 @@ def test_watch_flags_pending_work_with_no_run_and_timeout(tmp_path):
     ctl.close()
 
 
+
+def test_watch_does_not_report_the_top_managers_own_cancellations(tmp_path):
+    ctl = make_ctl(tmp_path)
+    spec = dict(department="research", context="c", acceptance_criteria=["a"], return_spec={"format": "f", "description": "d"})
+    mine = ctl.create({**spec, "title": "Obsolete"})["ticket_id"]
+    other = ctl.create({**spec, "title": "Stopped by the human"})["ticket_id"]
+    ctl.cancel(mine, "priorities changed")                                      # the top manager's own decision
+    actions.cancel(ctl.store, other, "not needed", "human")                     # someone else's: that is news
+    import os
+    ctl.lock_path.write_text(str(os.getpid()))
+    out = ctl.watch(timeout=2, grace=5, poll=0.05)
+    assert out["reason"] == "completed" and [c["id"] for c in out["completed"]] == [other]
+    assert ctl.watch(timeout=0.3, grace=5, poll=0.05)["reason"] == "timeout"     # and mine never shows up later
+    ctl.close()
+
 # ---------------------------------------------------------------- dashboard
 
 def app_for(tmp_path, launched):

@@ -216,6 +216,14 @@ class Ctl:
                 "max_cost_usd": b.get("max_cost_usd"), "stop_below_balance_usd": b.get("stop_below_balance_usd"),
                 "note": "the estimate uses the config's price table; the balance is what the provider reports"}
 
+    def _cancelled_by_top(self, t: dict[str, Any]) -> bool:
+        if t["status"] != "cancelled":
+            return False
+        for e in reversed(self.store.events(t["id"])):
+            if e["type"] == "status_changed" and e["payload"].get("to") == "cancelled":
+                return e["actor"] == "top_manager"
+        return False
+
     def set_models(self, ticket_id: str, manager: str | None = None, worker: str | None = None) -> dict[str, Any]:
         """The top manager picks models per ticket (it applies to everything below it): e.g. the cheap model by
         default and a stronger one for a hard or repeatedly failing ticket. 'default' removes a choice."""
@@ -422,6 +430,8 @@ class Ctl:
             if finished:
                 seen |= {f"{t['id']}:{t['status']}" for t in finished}
                 atomic_write(self.workspace / "attention_seen.json", json.dumps(sorted(seen)))
+                finished = [t for t in finished if not self._cancelled_by_top(t)]   # your own cancels are not news
+            if finished:
                 return {"reason": "completed", "run_active": board["run_active"],
                         "completed": [{"id": t["id"], "title": t["title"], "status": t["status"],
                                        "assignee": t["assignee"], "result": t.get("result"),
