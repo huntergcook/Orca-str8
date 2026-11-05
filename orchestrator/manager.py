@@ -248,7 +248,9 @@ class Manager:
         run_ticket(self.store, self.provider, c["id"], c["assignee"], self._with_rules(load_role(c["worker_role"])), models,
                    self.cfg["policies"]["capability_retry_limit"], toolbox=box, on_done=gate_cb,
                    extra_context=self._code_briefing(worktree, spec), department=self.department,
-                   max_tool_steps=int(self.cfg["policies"].get("max_tool_steps", 40)))
+                   max_tool_steps=int(self.cfg["policies"].get("max_code_tool_steps",
+                                                               self.cfg["policies"].get("max_tool_steps", 40))),
+                   context_chars=int(self.cfg["policies"].get("worker_context_chars", 200000)))
 
     def _run_child(self, c: dict[str, Any], models: list[str]) -> None:
         """Run one worker (in a pool thread). A crash in one worker never takes the department down."""
@@ -262,7 +264,8 @@ class Manager:
                           approve_requests=bool(self.cfg["policies"].get("approve_cross_department_work")))
             run_ticket(self.store, self.provider, c["id"], c["assignee"], self._with_rules(load_role(c["worker_role"])),
                        models, self.cfg["policies"]["capability_retry_limit"], toolbox=box, department=self.department,
-                       max_tool_steps=int(self.cfg["policies"].get("max_tool_steps", 40)))
+                       max_tool_steps=int(self.cfg["policies"].get("max_tool_steps", 40)),
+                       context_chars=int(self.cfg["policies"].get("worker_context_chars", 200000)))
         except Halted:
             raise
         except Exception as e:

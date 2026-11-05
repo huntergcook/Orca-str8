@@ -47,6 +47,8 @@ DEFAULTS: dict[str, Any] = {
         "max_parallel_workers": 4,     # workers per department running at the same time
         "max_concurrent_calls": 8,     # model calls in flight at once, across everything (provider rate limits)
         "max_tool_steps": 40,          # tool calls per worker ticket (with a countdown before the end)
+        "max_code_tool_steps": 80,     # code workers read and edit more: their own, larger allowance
+        "worker_context_chars": 200000,  # a worker's conversation size before old tool results are shortened
         "max_manager_tool_steps": 25,  # tool calls per manager decision
         "max_manager_rounds": 20,      # decisions per manager ticket before it is escalated as stuck
         "approve_cross_department_work": False,   # true: request_work tickets wait for the top manager (tight budgets)

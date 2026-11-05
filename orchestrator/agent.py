@@ -248,7 +248,9 @@ def run_ticket(store: Store, provider: Provider, ticket_id: str, actor: str, rol
             else:
                 status("tool", f"{name} ({tool_steps}/{max_tool_steps})")
                 result = toolbox.call(name, reply.get("args") or {})
-                store.add_event(ticket_id, actor, "tool_call", {"tool": name, "ok": result.get("ok")})
+                store.add_event(ticket_id, actor, "tool_call", {"tool": name, "ok": result.get("ok"),
+                                **({} if result.get("ok") else {"error": str(result.get("error", ""))[:200],
+                                                                  "args": json.dumps(reply.get("args") or {})[:200]})})
             left = max_tool_steps - tool_steps
             note = ""
             if left in (8, 3):
