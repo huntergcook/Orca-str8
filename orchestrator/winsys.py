@@ -48,7 +48,12 @@ def kill_children_on_exit() -> bool:
     try:
         import ctypes
         from ctypes import wintypes
-        k32 = ctypes.windll.kernel32                                            # type: ignore[attr-defined]
+        # private WinDLL with explicit types: default int marshalling mangles 64-bit handles (GetCurrentProcess() is -1)
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)                    # type: ignore[attr-defined]
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
 
         class BASIC(ctypes.Structure):
             _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),

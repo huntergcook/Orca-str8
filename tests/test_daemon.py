@@ -2,6 +2,7 @@
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 
 import pytest
@@ -210,6 +211,13 @@ def test_a_crashing_cycle_is_logged_and_retried_not_fatal(tmp_path):
     d.tick = boom
     assert d.run(max_ticks=5) == "stopped" and n["i"] == 3
     assert "disk hiccup" in d.log_path.read_text()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Job Objects are Windows-only")
+def test_job_object_and_keep_awake_really_work_on_windows():
+    r = subprocess.run([sys.executable, "-c", "from orchestrator import winsys; "
+                        "print(winsys.kill_children_on_exit(), winsys.keep_awake())"], capture_output=True, text=True)
+    assert r.stdout.split() == ["True", "True"], r.stdout + r.stderr
 
 
 def test_restart_clears_the_stuck_counter(tmp_path):
