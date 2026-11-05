@@ -204,6 +204,15 @@ class Ctl:
         """Send an escalated ticket back to work (guidance is appended to its context)."""
         return actions.retry(self.store, ticket_id, text, "top_manager")
 
+    def balance(self) -> dict[str, Any]:
+        """Real account balances (providers that report one, e.g. DeepSeek) next to the orchestrator's estimate."""
+        from .limits import cost_estimate
+        from .providers import fetch_balances
+        b = self.cfg["budget"]
+        return {"balances": fetch_balances(self.cfg), "estimated_spend_usd": cost_estimate(self.store, self.cfg),
+                "max_cost_usd": b.get("max_cost_usd"), "stop_below_balance_usd": b.get("stop_below_balance_usd"),
+                "note": "the estimate uses the config's price table; the balance is what the provider reports"}
+
     def set_models(self, ticket_id: str, manager: str | None = None, worker: str | None = None) -> dict[str, Any]:
         """The top manager picks models per ticket (it applies to everything below it): e.g. the cheap model by
         default and a stronger one for a hard or repeatedly failing ticket. 'default' removes a choice."""
@@ -478,7 +487,7 @@ def main(argv: list[str] | None = None, provider: Provider | None = None) -> int
     ap.add_argument("--project", help="project folder (default: $ORCHESTRATOR_PROJECT or the current directory)")
     ap.add_argument("--config", default="config/orchestrator.yaml")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("resume", "board", "run", "pause", "unpause", "recover"):
+    for name in ("resume", "board", "run", "pause", "unpause", "recover", "balance"):
         sub.add_parser(name)
     sub.add_parser("ticket").add_argument("id")
     c = sub.add_parser("create")

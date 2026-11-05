@@ -261,6 +261,24 @@ class Store:
                                       "cache_hit_tokens": r["hit"]}
         return out
 
+    def usage_by_model_split(self, off_peak_utc: tuple[str, str]) -> dict[str, dict[str, dict[str, int]]]:
+        """Like usage_by_model, split into {"peak": ..., "off_peak": ...} by the UTC clock time ("HH:MM", "HH:MM") of
+        each call; the window may wrap midnight (e.g. 16:30 to 00:30)."""
+        start, end = off_peak_utc
+        cond = "(hm >= :s AND hm < :e)" if start < end else "(hm >= :s OR hm < :e)"
+        out: dict[str, dict[str, dict[str, int]]] = {}
+        for r in self._conn.execute(
+                "SELECT model, " + cond + " AS off, COUNT(*) AS calls, COALESCE(SUM(tin), 0) AS tin,"
+                " COALESCE(SUM(tout), 0) AS tout, COALESCE(SUM(hit), 0) AS hit FROM ("
+                "  SELECT json_extract(payload, '$.model') AS model, substr(ts, 12, 5) AS hm,"
+                "   json_extract(payload, '$.input_tokens') AS tin, json_extract(payload, '$.output_tokens') AS tout,"
+                "   json_extract(payload, '$.cache_hit_tokens') AS hit FROM events WHERE type = 'usage')"
+                " GROUP BY model, off", {"s": start, "e": end}):
+            period = "off_peak" if r["off"] else "peak"
+            out.setdefault(r["model"] or "?", {})[period] = {
+                "calls": r["calls"], "input_tokens": r["tin"], "output_tokens": r["tout"], "cache_hit_tokens": r["hit"]}
+        return out
+
     def first_event_ts(self) -> str | None:
         row = self._conn.execute("SELECT ts FROM events ORDER BY seq LIMIT 1").fetchone()
         return row["ts"] if row else None

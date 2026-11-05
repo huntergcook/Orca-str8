@@ -438,3 +438,56 @@ def test_a_model_that_hits_its_usage_limit_is_skipped_for_the_rest_of_the_run(st
         assert out["status"] == "escalated" and "no usable model" in out["escalation"]["reason"]
     finally:
         providers.UNAVAILABLE.clear()
+
+
+# ------------------------------------------------------------------------- real money: off-peak prices, balance floor
+
+def test_off_peak_calls_are_priced_at_the_off_peak_rate(store):
+    from orchestrator.limits import cost_estimate
+    c = Completion(text="x", model="flash", input_tokens=1_000_000, output_tokens=1_000_000, cache_hit_tokens=0)
+    store.record_usage(None, "w", "research", c)
+    cfg = {"prices": {"flash": {"input": 1.0, "cache_hit": 0.1, "output": 2.0, "off_peak": 0.5}}}
+    assert cost_estimate(store, cfg) == pytest.approx(3.0)                       # no window: normal rate
+    now = store.last_event_ts()[11:16]                                          # the call's UTC HH:MM
+    h, m = int(now[:2]), int(now[3:])
+    start = f"{(h - 1) % 24:02d}:{m:02d}"; end = f"{(h + 1) % 24:02d}:{m:02d}"
+    cfg["price_off_peak_utc"] = [start, end]                                     # window around now (may wrap)
+    assert cost_estimate(store, cfg) == pytest.approx(1.5)
+    cfg["price_off_peak_utc"] = [end, start]                                     # the complement: peak again
+    assert cost_estimate(store, cfg) == pytest.approx(3.0)
+
+
+def test_a_real_balance_below_the_floor_halts_model_calls(store, tmp_path):
+    cfg = load_config(None)
+    cfg["budget"]["stop_below_balance_usd"] = 1.0
+    bal = {"deepseek": {"usd": 5.0, "available": True}}
+    g = GuardedProvider(Probe(delay=0), store, cfg, tmp_path, balance_fn=lambda: dict(bal))
+    cfg["budget"]["balance_check_seconds"] = 0
+    g.check()
+    bal["deepseek"] = {"usd": 0.4, "available": True}
+    with pytest.raises(Halted, match="below the floor"):
+        g.check()
+    bal["deepseek"] = {"error": "network down"}                                 # an unreadable balance never halts
+    g.check()
+
+
+def test_fetch_balances_reads_deepseek_and_never_returns_the_key(monkeypatch):
+    from orchestrator.providers import fetch_balances
+    monkeypatch.setenv("DS_KEY", "sk-secret")
+    seen = {}
+
+    class R:
+        status_code = 200
+        def json(self):
+            return {"is_available": True, "balance_infos": [{"currency": "USD", "total_balance": "6.61"}]}
+
+    def get(url, headers):
+        seen["url"], seen["auth"] = url, headers["Authorization"]
+        return R()
+
+    cfg = {"providers": {"deepseek": {"api_key_env": "DS_KEY", "base_url": "https://api.deepseek.com"},
+                         "local": {"base_url": "http://localhost:11434/v1"}}}
+    out = fetch_balances(cfg, http_get=get)
+    assert out == {"deepseek": {"usd": 6.61, "currency": "USD", "available": True}}
+    assert seen["url"] == "https://api.deepseek.com/user/balance" and seen["auth"] == "Bearer sk-secret"
+    assert "sk-secret" not in json.dumps(out)

@@ -36,7 +36,8 @@ DEFAULTS: dict[str, Any] = {
         "worker": {"provider": "anthropic", "model": "claude-opus-5-5"},
         "fallback_chain": [],
     },
-    "budget": {"max_cost_usd": None, "max_tokens": None, "max_minutes": None},
+    "budget": {"max_cost_usd": None, "max_tokens": None, "max_minutes": None,
+               "stop_below_balance_usd": None},     # halt when a provider's REAL balance (e.g. DeepSeek) drops below
     "policies": {
         "capability_retry_limit": 3,
         "on_safety_refusal": "retry_once_then_escalate_to_human",

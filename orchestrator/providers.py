@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+import httpx
+
 
 @dataclass
 class Completion:
@@ -114,6 +116,43 @@ def mark_unavailable(model: str, why: str) -> None:
 def usable(models: list[str]) -> list[str]:
     """The models of a chain that are not marked unavailable (order kept)."""
     return [m for m in models if m not in UNAVAILABLE]
+
+
+def balance_url(spec: dict[str, Any]) -> str | None:
+    """Where a provider reports the account's remaining money: `balance_url` in its config, or DeepSeek's
+    /user/balance when the base URL is DeepSeek's. None if the provider has no such endpoint."""
+    if spec.get("balance_url"):
+        return str(spec["balance_url"])
+    base = str(spec.get("base_url") or "")
+    return base.rstrip("/") + "/user/balance" if "api.deepseek.com" in base else None
+
+
+def fetch_balances(cfg: dict[str, Any], http_get: Callable[..., Any] | None = None) -> dict[str, dict[str, Any]]:
+    """{provider: {"usd": float, "available": bool} or {"error": "..."}} for every configured provider that reports
+    a balance. The API key is sent only to that provider's own endpoint and is never returned or logged."""
+    out: dict[str, dict[str, Any]] = {}
+    get = http_get or (lambda url, headers: httpx.get(url, headers=headers, timeout=20))
+    for name, spec in (cfg.get("providers") or {}).items():
+        url = balance_url(spec or {})
+        if not url:
+            continue
+        key = os.environ.get(str(spec.get("api_key_env") or ""), "")
+        if not key:
+            out[name] = {"error": f"{spec.get('api_key_env')} is not set"}
+            continue
+        try:
+            r = get(url, headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
+            data = r.json()
+            infos = data.get("balance_infos") or []
+            usd = next((i for i in infos if i.get("currency") == "USD"), infos[0] if infos else None)
+            if usd is None:
+                out[name] = {"error": f"no balance in reply (HTTP {r.status_code})"}
+                continue
+            out[name] = {"usd": float(usd.get("total_balance", 0)), "currency": usd.get("currency", "?"),
+                         "available": bool(data.get("is_available", True))}
+        except Exception as e:                         # network, JSON, unexpected shape
+            out[name] = {"error": f"{type(e).__name__}: {str(e)[:200]}"}
+    return out
 
 class OpenAICompatProvider:
     """Any OpenAI-format API (POST {base_url}/chat/completions): DeepSeek, OpenAI, Together, and local

@@ -3,7 +3,8 @@
 GuardedProvider wraps any Provider. Before each call it refuses (raises Halted) when:
   * a file named PAUSE exists in the workspace (create it to halt all model calls; delete to resume)
   * the token or dollar budget (cumulative for the workspace) or the per-run time budget is exhausted
-    (dollars need a `prices` table in the config)
+    (dollars need a `prices` table in the config; off-peak rates with `price_off_peak_utc`)
+  * a provider's REAL account balance (DeepSeek reports one) is below `budget.stop_below_balance_usd`
 It also lets at most `policies.max_concurrent_calls` calls run at once, so parallel managers and workers do not
 trip the provider's rate limits. Budgets default to None (unlimited).
 """
@@ -14,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .providers import Completion, Provider
+from .providers import Completion, Provider, fetch_balances
 from .store import Store
 
 
@@ -22,41 +23,95 @@ class Halted(Exception):
     """Raised before a model call when the run is paused or over budget."""
 
 
+def _price(prices: dict[str, Any], model: str) -> dict[str, Any] | None:
+    return prices.get(model) or prices.get(model.split(":", 1)[-1])
+
+
+def _rates(p: dict[str, Any], off_peak: bool) -> dict[str, float]:
+    """$ per million tokens. An `off_peak` entry is either a multiplier (0.5 = half price) or its own rate table."""
+    base = {k: float(p.get(k, p.get("input", 0) if k == "cache_hit" else 0)) for k in ("input", "cache_hit", "output")}
+    if not off_peak or "off_peak" not in p:
+        return base
+    op = p["off_peak"]
+    if isinstance(op, (int, float)):
+        return {k: v * float(op) for k, v in base.items()}
+    return {k: float(op.get(k, base[k])) for k in base}
+
+
+def _cost(u: dict[str, int], r: dict[str, float]) -> float:
+    hit = u.get("cache_hit_tokens", 0)
+    miss = max(0, u.get("input_tokens", 0) - hit)
+    return (miss * r["input"] + hit * r["cache_hit"] + u.get("output_tokens", 0) * r["output"]) / 1_000_000
+
+
 def estimate_cost(by_model: dict[str, dict[str, int]], prices: dict[str, Any]) -> float | None:
-    """USD from per-model token counts and a price table {model: {input, output, cache_hit}} in $ per million tokens.
-    None if no model in use has a price."""
+    """USD from per-model token counts and a price table {model: {input, output, cache_hit}} in $ per million tokens
+    (all at the normal rate). None if no model in use has a price."""
     total, priced = 0.0, False
     for model, u in by_model.items():
-        p = prices.get(model) or prices.get(model.split(":", 1)[-1])
+        p = _price(prices, model)
+        if p:
+            priced, total = True, total + _cost(u, _rates(p, False))
+    return total if priced else None
+
+
+def estimate_cost_split(split: dict[str, dict[str, dict[str, int]]], prices: dict[str, Any]) -> float | None:
+    """Like estimate_cost, for usage split into peak and off-peak calls (Store.usage_by_model_split)."""
+    total, priced = 0.0, False
+    for model, periods in split.items():
+        p = _price(prices, model)
         if not p:
             continue
         priced = True
-        hit = u.get("cache_hit_tokens", 0)
-        miss = max(0, u.get("input_tokens", 0) - hit)
-        total += (miss * float(p.get("input", 0)) + hit * float(p.get("cache_hit", p.get("input", 0)))
-                  + u.get("output_tokens", 0) * float(p.get("output", 0))) / 1_000_000
+        for period, u in periods.items():
+            total += _cost(u, _rates(p, period == "off_peak"))
     return total if priced else None
+
+
+def cost_estimate(store: Store, cfg: dict[str, Any]) -> float | None:
+    """The workspace's estimated spend: off-peak calls are priced at the off-peak rate when the config has
+    `price_off_peak_utc: ["HH:MM", "HH:MM"]` and the model's price has an `off_peak` entry."""
+    prices = cfg.get("prices") or {}
+    window = cfg.get("price_off_peak_utc")
+    if window and len(window) == 2:
+        return estimate_cost_split(store.usage_by_model_split((str(window[0]), str(window[1]))), prices)
+    return estimate_cost(store.usage_by_model(), prices)
 
 
 class GuardedProvider:
     def __init__(self, inner: Provider, store: Store, cfg: dict[str, Any], workspace: str | Path,
-                 max_concurrent: int | None = None) -> None:
+                 max_concurrent: int | None = None, balance_fn: Any | None = None) -> None:
         self.inner, self.store, self.cfg = inner, store, cfg
         self.pause_file = Path(workspace) / "PAUSE"
         n = max_concurrent or (cfg.get("policies") or {}).get("max_concurrent_calls") or 8
         self._slots = threading.BoundedSemaphore(max(1, int(n)))
         self._started = time.monotonic()          # max_minutes limits THIS run, not idle time between runs
+        self._balance_fn = balance_fn or (lambda: fetch_balances(cfg))
+        self._balance_at, self._balances = -1e9, {}
+        self._balance_lock = threading.Lock()
 
     def tokens_used(self) -> int:
         t = self.store.usage_totals()
         return t["input_tokens"] + t["output_tokens"]
 
     def cost_used(self) -> float | None:
-        return estimate_cost(self.store.usage_by_model(), self.cfg.get("prices") or {})
+        return cost_estimate(self.store, self.cfg)
 
     def minutes_elapsed(self) -> float:
         """Minutes since this run started (a new run gets a fresh time budget; tokens and dollars are cumulative)."""
         return (time.monotonic() - self._started) / 60
+
+    def balances(self) -> dict[str, dict[str, Any]]:
+        """Real account balances, re-read at most every `budget.balance_check_seconds` (default 60)."""
+        every = float(self.cfg["budget"].get("balance_check_seconds", 60))
+        with self._balance_lock:
+            if time.monotonic() - self._balance_at >= every:
+                try:
+                    self._balances = self._balance_fn() or {}
+                except Exception:
+                    self._balances = {}
+                self._balance_at = time.monotonic()
+            return dict(self._balances)
 
     def check(self) -> None:
         if self.pause_file.exists():
@@ -66,6 +121,12 @@ class GuardedProvider:
             raise Halted(f"token budget exhausted ({b['max_tokens']})")
         if b.get("max_minutes") is not None and self.minutes_elapsed() >= b["max_minutes"]:
             raise Halted(f"time budget exhausted ({b['max_minutes']} min)")
+        floor = b.get("stop_below_balance_usd")
+        if floor is not None:
+            for name, info in self.balances().items():
+                if "usd" in info and info["usd"] < float(floor):
+                    raise Halted(f"{name} balance ${info['usd']:.2f} is below the floor ${float(floor):.2f} "
+                                 "(budget.stop_below_balance_usd)")
         if b.get("max_cost_usd") is not None:
             cost = self.cost_used()
             if cost is not None and cost >= float(b["max_cost_usd"]):
