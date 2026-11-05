@@ -70,6 +70,9 @@ class Ctl:
         return row
 
     def board(self) -> dict[str, Any]:
+        released = actions.release_abandoned_holds(self.store, "top_manager")
+        if released:
+            self.store.add_event(None, "top_manager", "note", {"text": f"released abandoned holds: {released}"})
         top_level = [t for t in self.store.list_tickets() if t["parent_id"] is None]
         rows = [self._row(t) for t in top_level]
         attention, handled_below = [], []

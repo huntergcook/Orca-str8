@@ -9,6 +9,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
+from . import actions
 from .agent import parse_reply
 from .config import model_chain
 from .manager import ROLES_DIR, Manager, load_role
@@ -158,6 +159,10 @@ class TopManager:
 
         with ThreadPoolExecutor(max_workers=limit, thread_name_prefix="ticket") as pool:
             while True:
+                try:
+                    actions.release_abandoned_holds(self.store, "top_manager")   # e.g. a cancelled ticket's job ended
+                except Exception:
+                    pass
                 if not halted:
                     for m in self.managers.values():
                         for status in ("open", "in_progress"):

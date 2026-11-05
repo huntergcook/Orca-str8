@@ -114,6 +114,31 @@ def retry(store: Store, ticket_id: str, text: str, actor: str) -> dict[str, Any]
     return {"ticket_id": ticket_id, "status": t["status"]}
 
 
+def release_abandoned_holds(store: Store, actor: str = "orchestrator") -> list[str]:
+    """Free resources whose holder ticket is finished (done, failed, cancelled) once none of its jobs is still
+    running. Running jobs are never killed here (stopping hardware mid-run may be unsafe): the resource is freed as
+    soon as the job ends. Returns the names released."""
+    released = []
+    for r in store.list_resources():
+        holder = r.get("holder_ticket")
+        if r.get("state") != "busy" or not holder:
+            continue
+        try:
+            t = store.get_ticket(holder)
+        except Exception:
+            t = None
+        if t is not None and t["status"] not in FINISHED:
+            continue
+        alive = [j for j in store.list_jobs(state="running", ticket_id=holder)
+                 if process_alive(j.get("pid"), j.get("pid_started"))]
+        if alive:
+            continue
+        why = f"holder {holder} is {t['status'] if t else 'gone'} and none of its jobs is running"
+        store.force_release_resource(r["name"], actor, why)
+        released.append(r["name"])
+    return released
+
+
 def cancel(store: Store, ticket_id: str, text: str, actor: str) -> dict[str, Any]:
     t = store.get_ticket(ticket_id)
     if t["status"] not in CANCELLABLE:
@@ -131,7 +156,8 @@ def cancel(store: Store, ticket_id: str, text: str, actor: str) -> dict[str, Any
                     stopped.append(c["id"])
                 except StoreError:
                     pass                      # it finished in the meantime
-    return {"ticket_id": ticket_id, "status": t["status"], "also_cancelled": stopped}
+    released = release_abandoned_holds(store, actor)      # hardware it held is freed now, or when its job ends
+    return {"ticket_id": ticket_id, "status": t["status"], "also_cancelled": stopped, "released": released}
 
 
 def handoff(store: Store, ticket_id: str, text: str, actor: str) -> dict[str, Any]:

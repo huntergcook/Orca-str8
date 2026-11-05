@@ -491,3 +491,27 @@ def test_fetch_balances_reads_deepseek_and_never_returns_the_key(monkeypatch):
     assert out == {"deepseek": {"usd": 6.61, "currency": "USD", "available": True}}
     assert seen["url"] == "https://api.deepseek.com/user/balance" and seen["auth"] == "Bearer sk-secret"
     assert "sk-secret" not in json.dumps(out)
+
+
+def test_cancel_frees_hardware_once_no_job_of_the_ticket_is_running(store, tmp_path):
+    import subprocess as sp, sys as _sys
+    import psutil
+    from orchestrator import actions
+    store.register_resource("rig", "safe between runs")
+    store.register_resource("pc", "safe between runs")
+    idle = store.create_ticket({**SPEC, "title": "idle", "assignee": "worker:r-1"}, "m")["id"]
+    busy = store.create_ticket({**SPEC, "title": "busy", "assignee": "worker:r-2"}, "m")["id"]
+    store.claim_resource("rig", idle, "1m", "w1")
+    store.claim_resource("pc", busy, "1m", "w2")
+    proc = sp.Popen([_sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        store.create_job(busy, "w2", "long", ["x"], str(tmp_path / "log.txt"), resource="pc", pid=proc.pid,
+                         job_id="j1", pid_started=psutil.Process(proc.pid).create_time())
+        assert actions.cancel(store, idle, "no longer needed", "top_manager")["released"] == ["rig"]
+        assert actions.cancel(store, busy, "no longer needed", "top_manager")["released"] == []   # its job still runs
+        state = {r["name"]: r["state"] for r in store.list_resources()}
+        assert state == {"rig": "free", "pc": "busy"}
+    finally:
+        proc.kill()
+        proc.wait()
+    assert actions.release_abandoned_holds(store) == ["pc"]                       # freed as soon as the job ended
