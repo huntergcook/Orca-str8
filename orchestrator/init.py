@@ -176,6 +176,9 @@ def main() -> int:
         from .modelcfg import use_cli
         use_cli(Path(a.target) / "config" / "orchestrator.yaml", a.use_cli)
         print(f"models: every manager, worker and verifier now runs on the {a.use_cli} CLI (config/models.yaml)")
+    if not (Path(a.target) / ".git").exists():
+        print("\nnote: this folder is not a git repository. Code tickets (the Software department) need one: "
+              "run `git init` and make a first commit in it, or set code.repo in config/orchestrator.yaml.")
     print(f"\nNext: add DEEPSEEK_API_KEY to {Path(a.target) / '.env'} (copy .env.example), then run "
           "`python -m orchestrator.smoke` from that folder.")
     return 0

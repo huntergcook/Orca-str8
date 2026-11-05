@@ -559,6 +559,18 @@ def test_director_review_accept_integration_and_release(repo_dir, tmp_path):
     ctl.close()
 
 
+def test_headless_director_can_release_via_action(repo_dir, tmp_path):
+    """The daemon's director replies with JSON actions only, so releasing must be an action, not just `ctl code release`."""
+    ctl = make_ctl(repo_dir, tmp_path, Team())
+    create(ctl)
+    ctl.run()
+    ctl.code_accept(ctl.code_list()["awaiting_review"][0]["id"])
+    ctl.director._act({"type": "release_code"})
+    assert "a + b" in (repo_dir / "src" / "calc.py").read_text()
+    assert any(e["type"] == "code_released" for e in ctl.store.events(None))
+    ctl.close()
+
+
 def test_director_reject_and_discard(repo_dir, tmp_path):
     ctl = make_ctl(repo_dir, tmp_path, Team())
     create(ctl)

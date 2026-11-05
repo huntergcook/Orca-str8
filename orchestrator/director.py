@@ -43,6 +43,7 @@ Reply with exactly one JSON object:
      {"type": "decide", "decision": "<a high-level call you made on the human's behalf>", "basis": "<the part of the mission brief it follows from>", "reversible": true},
      {"type": "assume", "text": "<an assumption you made instead of asking the human; they can overturn it later>"},
      {"type": "ask_human", "question": "<only a question that truly needs the human; work continues meanwhile>"},
+     {"type": "release_code"},   # merge the code the Software department integrated into the project's main branch; do this once its work is integrated and before you finish
      {"type": "finish", "summary": "<why the goal is sufficiently met>"}]}
 "say" is required; "actions" may be empty. Ask the human questions when the goal, stopping
 criteria, or acceptable rigor is unclear (during intake), but when the human is away prefer `assume` over `ask_human`
@@ -67,7 +68,8 @@ class Director:
         self.log_path = human_log(workspace)
         self.models = model_chain(cfg, "director")
         self.finished = False
-        self.finish_gate: Any = None              # daemon: callable -> (ok, reason); a finish only counts if ok
+        self.release_code: Any = None             # callable -> dict; merges the integration branch into the base branch
+        self.finish_gate: Any = None             # daemon: callable -> (ok, reason); a finish only counts if ok
         self.finish_rejection: str | None = None  # why the last finish request was refused (fed to the next turn)
         self.notify: Any = None                   # daemon: callable(level, title, body)
         self._mgr_models, self._wrk_models = model_chain(cfg, "manager"), model_chain(cfg, "worker")
@@ -378,6 +380,11 @@ class Director:
                 self.store.add_event(None, "director", "human_question", {"question": q[:500]})
                 if self.notify:
                     self.notify("question", "The director has a question", q)
+        elif kind == "release_code":
+            if self.release_code is None:
+                raise RuntimeError("release_code is only available when a Ctl is attached (daemon mode)")
+            out = self.release_code()
+            self.memory.append_journal(f"RELEASED code into the base branch: {str(out)[:300]}")
         elif kind == "finish":
             summary = str(a.get("summary", ""))
             if self.finish_gate is not None:

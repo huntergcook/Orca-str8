@@ -44,6 +44,7 @@ class Ctl:
         self.store = Store(self.workspace / "orchestrator.db")
         self.provider = GuardedProvider(provider or build_provider(cfg), self.store, cfg, self.workspace)
         self.director = Director(self.store, self.provider, cfg, self.workspace)
+        self.director.release_code = self.code_release
 
     def close(self) -> None:
         for m in getattr(self.director, "managers", {}).values():     # let worker threads finish before the store closes
