@@ -64,6 +64,8 @@ workspace/
 *.db-wal
 *.db-shm
 __pycache__/
+# the brief is edited while the harness runs; tracked, it would block `code release` (needs a clean tree)
+config/mission.yaml
 """
 
 ENV_EXAMPLE = """\

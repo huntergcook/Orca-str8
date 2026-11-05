@@ -579,6 +579,18 @@ def test_headless_director_can_release_via_action(repo_dir, tmp_path):
     ctl.close()
 
 
+def test_failed_release_tells_the_director_why(repo_dir, tmp_path):
+    ctl = make_ctl(repo_dir, tmp_path, Team())
+    create(ctl)
+    ctl.run()
+    ctl.code_accept(ctl.code_list()["awaiting_review"][0]["id"])
+    (repo_dir / "src" / "calc.py").write_text("# dirty tracked file\n")
+    ctl.director._act({"type": "release_code"})              # errors are caught as a bad_action event...
+    journal = (tmp_path / "ws" / "memory" / "director" / "journal.md").read_text()
+    assert "RELEASE FAILED" in journal and "calc.py" in journal     # ...and the reason reaches the director's notes
+    ctl.close()
+
+
 def test_director_reject_and_discard(repo_dir, tmp_path):
     ctl = make_ctl(repo_dir, tmp_path, Team())
     create(ctl)

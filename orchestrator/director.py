@@ -383,7 +383,11 @@ class Director:
         elif kind == "release_code":
             if self.release_code is None:
                 raise RuntimeError("release_code is only available when a Ctl is attached (daemon mode)")
-            out = self.release_code()
+            try:
+                out = self.release_code()
+            except Exception as e:                  # the director never sees bad_action events: put the reason where it reads
+                self.memory.append_journal(f"RELEASE FAILED: {type(e).__name__}: {e}"[:600])
+                raise
             self.memory.append_journal(f"RELEASED code into the base branch: {str(out)[:300]}")
         elif kind == "finish":
             summary = str(a.get("summary", ""))

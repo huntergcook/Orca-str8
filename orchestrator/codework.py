@@ -308,8 +308,10 @@ class CodeRepo:
         current = _git(["rev-parse", "--abbrev-ref", "HEAD"], self.repo).strip()
         if current != self.base_branch:
             raise CodeError(f"the repository is on '{current}', not '{self.base_branch}'; switch back before releasing")
-        if _git(["status", "--porcelain", "--untracked-files=no"], self.repo).strip():
-            raise CodeError("the repository has uncommitted changes to tracked files; commit or stash them first")
+        dirty = _git(["status", "--porcelain", "--untracked-files=no"], self.repo).strip()
+        if dirty:
+            raise CodeError("the repository has uncommitted changes to tracked files (commit or stash them first): "
+                            + ", ".join(ln[3:] for ln in dirty.splitlines()[:8]))
         status = self.integration_status()
         if not status["ahead"]:
             raise CodeError("nothing to release: the integration branch has no commits beyond the base branch")
