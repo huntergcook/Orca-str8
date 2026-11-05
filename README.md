@@ -116,7 +116,7 @@ understanding from notes and the ticket tree each time, so they survive restarts
 
 You can add departments (see [Customize](#customize-it)).
 
-**Changing code (the Software department).** Code tickets carry a `code` spec: `allowed_paths` (narrow globs), `acceptance` (shell commands that must pass) and `context_files`. The worker gets a small tool set (list, read, search, `edit_file`, `write_file`, `run_tests`), nothing that can reach outside its worktree. When it says done, the orchestrator commits and runs the gates; if one fails the failure goes back into the *same* conversation. A passing branch is never merged automatically: the top manager (or you) reviews a packet (summary, open questions, gates, diff) and accepts or rejects it. The top manager can write exact worker tickets itself (`worker_tickets`), so ticket quality stays with the strongest model while cheap models write the code. Configure with `code:` in the config (`repo`, `base_branch`, `worktrees_dir`, `test_timeout`, `gates`). Workers cannot build C++ or run games, so acceptance should be Python-side tests; real builds stay yours.
+**Changing code (the Software department).** Code tickets carry a `code` spec: `allowed_paths` (narrow globs), `acceptance` (shell commands that must pass) and `context_files`. Before any worker starts, every acceptance command is run once in a throwaway checkout: one that cannot run as written (program not found, a missing script, a usage error) sends the delegation back to the manager, so nobody burns retries on a check that can never pass. The worker edits its own git worktree with a small tool set (list, read, search, `edit_file`, `write_file`, `run_tests`, `run_command`). When it says done, the orchestrator commits (build output is never committed) and runs the gates: secret scan, the acceptance commands, and a scope check that flags files changed outside `allowed_paths` for review. A failing gate goes back into the *same* conversation. The Software manager reviews each passing branch (summary, open questions, scope notes, diff), fixes small things itself, and integrates it into the integration branch, where `integration_checks` run after every merge (a merge that breaks them is undone). Your main branch changes only on `ctl code release`. The top manager can write exact worker tickets (`worker_tickets`), so ticket quality stays with the strongest model while cheap models write the code. Acceptance commands can be anything your machine can run, including C++ builds; things only a person can check (a headset, how it feels) go to you as a checklist.
 
 **A team that works in parallel.** Every department's tickets run at the same time, and inside a department every runnable worker runs at once (capped by `max_parallel_workers`, with `max_concurrent_calls` protecting the provider's rate limits). Managers react as results arrive: they answer questions and review finished branches while slower workers are still going, so nobody waits on the slowest. Managers have their own tools and full authority to fix what a worker could not. Any agent can file work for another department (`request_work`), and workers report work they noticed in `follow_ups`; managers pass the rest up so the top manager can keep a project-wide list with no holes.
 
@@ -140,19 +140,28 @@ to the manager, who must weigh it heavily but keeps the final say; overriding it
 the worker failed (reason, a sample of its bad reply, retries used) and can retry it with guidance on a fallback model,
 delegate differently, or accept the gap. Only what a manager cannot resolve reaches the top manager; only what the top
 manager cannot resolve reaches you. **Safety issues and model refusals go straight to you** by policy, and nothing below
-you may route around a refusal.
+you may route around a refusal. Small protocol slips (a tool name sent as the action) are corrected instead of escalated,
+and a model that runs out of quota (a CLI subscription limit, no API balance) is skipped for the rest of the run instead of
+failing tickets. Cancelling a ticket stops the work below it at the next model call. With
+`policies.approve_cross_department_work`, work one department asks of another waits as a **proposal** for the top manager.
 
 **Memory and recovery.** State lives in a SQLite database (fully synced) and atomically written files. After a crash or
 power cut, `resume` reports what was interrupted, `recover` clears stale locks and marks dead jobs lost, and unfinished
 workers restart knowing they were interrupted so they check their saved files before redoing work. Hardware claims are
-**never** released automatically (its physical state is unknown): you confirm, then release.
+**never** released automatically after a crash (its physical state is unknown): you confirm, then release. A resource held
+by a ticket that finished or was cancelled is released as soon as none of its jobs is still running (jobs are never killed
+for this).
 
 **Models.** Each role can run on a different backend (below). Stronger models usually belong higher up. If a worker's
-reply fails, it falls through your fallback chain; each manager retry moves further along it.
+reply fails, it falls through your fallback chain; each manager retry moves further along it. The top manager can also
+choose models for one ticket and everything below it (`ctl set-models`), e.g. the cheap model by default and a stronger
+one only for a ticket that keeps failing.
 
 **Dashboard.** Needs-human (with Answer / Retry / Cancel buttons), a "being handled below you" list, a **Team** panel with every
 manager and worker, its live state (thinking, using a tool, checking, waiting, reviewing, done) and token use, grouped by department,
-token use **by department** (including prompt-cache hits), the integration branch, hardware and jobs, token spend, tickets and an event feed. A **Resume run** button appears if unfinished
+token use **by department** (including prompt-cache hits), **real provider balances** next to the estimated spend, models
+skipped for quota, proposals waiting for approval (Approve / Decline), the models chosen per ticket, the integration branch,
+hardware and jobs, tickets and an event feed. A **Resume run** button appears if unfinished
 work has no run (after a restart). Read-only except those actions, which are guarded by a per-start token and
 localhost-only.
 
@@ -209,6 +218,7 @@ Run these from your project folder (or add `--project PATH`). Your agent runs mo
 | `ctl code list` / `show ID` / `accept ID` / `reject ID "feedback"` / `discard ID` | Review branches yourself (when `code.review: top_manager`, or to override) |
 | `ctl models ...` | See and choose models (above) |
 | `ctl set-models ID --manager M --worker M` | The top manager picks models for one ticket and its subtree (e.g. cheap by default, stronger for a hard or failing ticket); `default` clears |
+| `ctl balance` | Real account balances from providers that report one (DeepSeek), next to the estimated spend |
 | `ctl pause` / `ctl unpause` | Halt or resume all model calls (also: create a file `workspace/PAUSE`) |
 | `ctl finish "summary"` | Mark the project done |
 
@@ -226,10 +236,10 @@ Run these from your project folder (or add `--project PATH`). Your agent runs mo
 | `models` / `providers` | Which backend runs each role (prefer `ctl models`); `fallback_chain` for retries |
 | `departments` | Which departments exist: `manager_role`, `mission`, `can_acquire_tools`, `resource_leases` (hardware), `diverse_models` |
 | `verification` | `enabled`, `verifier_models`, `max_rounds` |
-| `budget` | `max_tokens`, `max_minutes` and (with `prices`) `max_cost_usd` are enforced |
-| `policies` | `max_parallel_tickets`, `max_parallel_workers`, `max_concurrent_calls`, `max_tool_steps`, `max_manager_tool_steps`, `max_manager_rounds`, `capability_retry_limit`, `max_worker_retries`, `max_children_per_agent`, `default_rigor` |
-| `code` | `review` (`manager` or `top_manager`), `integration_branch`, `integration_checks` (run after every merge; a breaking merge is undone), `test_timeout`, `gates` |
-| `prices` | Optional `{model: {input, output, cache_hit}}` in $ per million tokens; enables cost estimates and `budget.max_cost_usd` |
+| `budget` | `max_tokens`, `max_minutes` (per run) and (with `prices`) `max_cost_usd` are enforced. `stop_below_balance_usd` halts model calls when a provider's **real** balance drops below it (re-read every `balance_check_seconds`, default 60): the most accurate limit when your provider reports a balance |
+| `policies` | `max_parallel_tickets`, `max_parallel_workers`, `max_concurrent_calls`, `max_tool_steps`, `max_manager_tool_steps`, `max_manager_rounds`, `capability_retry_limit`, `max_worker_retries`, `max_children_per_agent`, `default_rigor`, `approve_cross_department_work` (cross-department requests wait for the top manager; use it on a tight budget) |
+| `code` | `review` (`manager` or `top_manager`), `integration_branch`, `integration_checks` (run after every merge; a breaking merge is undone), `test_timeout`, `gates`, `preflight` / `preflight_timeout` (acceptance commands are checked before workers start; default on, 60 s) |
+| `prices` | Optional `{model: {input, output, cache_hit, off_peak}}` in $ per million tokens; enables cost estimates and `budget.max_cost_usd`. `off_peak` is a multiplier (0.5) or its own rate table, applied to calls inside `price_off_peak_utc: ["16:30", "00:30"]` |
 | `read_roots` | Folders agents may **read** (never write), by absolute path, e.g. your existing code repo. `.env`, keys and credential files are always blocked. Output still goes to `workspace/` |
 | `rules_file` | A file of mandatory project rules (legal, safety, house rules) injected into **every** manager, worker and verifier prompt; verification fails work that breaks them |
 
@@ -254,7 +264,9 @@ Read this before pointing it at anything that matters.
   not. For anything risky, use a dedicated machine or VM, and keep hardware behind hardware-level safety limits.
 - **Your data goes to the model providers you configure.** Tickets, context and file contents are sent to them. Keep
   sensitive work on a provider you trust, or on a local model.
-- **Cost controls.** Token, time and (with a `prices` table) dollar budgets are enforced, and `PAUSE` halts everything immediately.
+- **Cost controls.** Token, time and (with a `prices` table) dollar budgets are enforced, a real-balance floor where the
+  provider reports one, and `PAUSE` halts everything immediately. Estimates are only as good as your price table: check
+  `ctl balance` against them.
   CLI backends report no real usage numbers. Parallel work spends faster; verification multiplies model calls.
 - **One run at a time per project** (enforced with a lock).
 - **Workers cannot spawn sub-workers yet** (`max_subworker_depth` is declared but unused).
@@ -265,14 +277,20 @@ Read this before pointing it at anything that matters.
 
 ## What has been verified
 
-- **229 automated tests**, all with mock or scripted providers plus real local subprocesses (jobs, a fake CLI backend, a
-  simulated power loss, concurrency guards, the dashboard's security checks).
-- **Live:** a complete research task ran end to end on DeepSeek models: the research department, workers using the file,
-  Python and tool-registry tools, the verification gate, and worker escalations. The Claude CLI backend also answered a
-  real call.
-- **Not yet live:** the Tooling department's GitHub and PyPI sourcing, the Experiment department and real hardware, the
-  Codex preset (built from OpenAI's CLI reference, never run on a real Codex), game development, macOS/Linux. A built-in chat top manager (`python -m orchestrator`, for when you have no interactive
-  agent) exists but is the least-tested path.
+- **245 automated tests**, all with mock or scripted providers plus real local subprocesses (jobs, git worktrees, a fake CLI
+  backend, a simulated power loss, concurrency guards, the dashboard's security checks).
+- **Live, research task:** a complete research task ran end to end on DeepSeek models (research department, file, Python
+  and tool-registry tools, the verification gate, worker escalations).
+- **Live, a real project** (a VR mod for a 32-bit game, C++ and Python, a few dollars of DeepSeek over two sessions): all five
+  departments ran in parallel. Tooling found, license-checked and acquired real open-source tools from GitHub and PyPI;
+  the Software department wrote and integrated C++ and Python on worktrees, with the plugin and helper builds as
+  integration checks; the Experiment department ran the actual game on a fake VR headset through a leased-PC launcher
+  that always restores the user's real headset settings; verification audited the project's own notes. Most changes
+  in the history since then came from what that run exposed. The Claude CLI backend (Haiku) ran there too, until it hit
+  the subscription's limit, which is how quota skipping came about.
+- **Not yet live:** the Codex preset (built from OpenAI's CLI reference, never run on a real Codex), real hardware other
+  than a PC, macOS/Linux. A built-in chat top manager (`python -m orchestrator`, for when you have no interactive agent)
+  exists but is the least-tested path.
 
 ---
 
