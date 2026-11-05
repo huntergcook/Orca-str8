@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import tempfile
 import threading
 import time
@@ -25,6 +26,13 @@ from .limits import cost_estimate
 from .store import Store
 
 
+def _git_init(project: Path) -> None:
+    (project / ".gitignore").write_text("workspace/\nmission.yaml\n__pycache__/\n.pytest_cache/\n", encoding="utf-8")
+    for args in (["init", "-q", "-b", "main"], ["add", "-A"],
+                 ["-c", "user.name=bench", "-c", "user.email=bench@localhost", "commit", "-q", "-m", "bench start"]):
+        subprocess.run(["git", *args], cwd=str(project), check=True, capture_output=True)
+
+
 def run_goal(spec: dict[str, Any], base: str | Path, config: str | Path | None = None, provider: Any = None,
              max_minutes: float = 45.0, cfg_patch: dict[str, Any] | None = None) -> dict[str, Any]:
     project = Path(base) / spec["name"]
@@ -33,8 +41,10 @@ def run_goal(spec: dict[str, Any], base: str | Path, config: str | Path | None =
         p = project / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text, encoding="utf-8")
+    _git_init(project)                                  # code tickets need a repo, and it must be THIS project's
     cfg = load_config(config)
     cfg["workspace"] = str(project / "workspace")
+    cfg.setdefault("code", {})["repo"] = str(project)    # never fall back to whatever repo the process was started in
     cfg["mission_file"] = str(project / "mission.yaml")
     cfg["policies"]["daemon_poll_seconds"] = min(float(cfg["policies"].get("daemon_poll_seconds", 5)), 2)
     for k, v in (cfg_patch or {}).items():

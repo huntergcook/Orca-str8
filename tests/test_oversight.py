@@ -148,6 +148,15 @@ def test_daemon_saves_check_evidence(tmp_path):
     assert list((d.workspace / "evidence").glob("checks-*.txt"))
 
 
+def test_bench_project_is_its_own_git_repo(tmp_path):
+    import subprocess
+    from orchestrator import bench
+    (tmp_path / "a.py").write_text("x = 1\n")
+    bench._git_init(tmp_path)
+    git = lambda *a: subprocess.run(["git", *a], cwd=tmp_path, capture_output=True, text=True).stdout
+    assert "bench start" in git("log", "--oneline") and "a.py" in git("ls-files")
+
+
 def test_bench_runs_a_goal_offline_and_compares(tmp_path):
     import sys
     from orchestrator import bench
