@@ -212,6 +212,13 @@ def test_a_crashing_cycle_is_logged_and_retried_not_fatal(tmp_path):
     assert "disk hiccup" in d.log_path.read_text()
 
 
+def test_restart_clears_the_stuck_counter(tmp_path):
+    d, cfg, _ = daemon(tmp_path, [])
+    d._save(gap_turns=3, last_gap_sig="x")
+    d.run(max_ticks=0)                       # acquires the lock and records the (re)start, runs no cycle
+    assert d.state["gap_turns"] == 0
+
+
 def test_a_second_daemon_for_the_same_project_is_refused(tmp_path):
     a, cfg, _ = daemon(tmp_path, [])
     from orchestrator.util import atomic_write, process_stamp

@@ -399,7 +399,7 @@ class Daemon:
             self.log("another daemon is already running for this project")
             return "already_running"
         winsys.keep_awake()
-        self._save(started=_now(), pid=os.getpid())
+        self._save(started=_now(), pid=os.getpid(), gap_turns=0)      # a (re)start gives the director fresh tries
         crashes, ticks = 0, 0
         try:
             while max_ticks is None or ticks < max_ticks:
