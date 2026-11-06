@@ -84,3 +84,11 @@ def test_dashboard_shows_proposals_models_skipped_models_and_real_money(store, t
     assert s["spend"]["balances"] == {"deepseek": {"usd": 6.61}} and s["spend"]["stop_below_balance_usd"] == 0.5
     html = client.get("/").text
     assert "Approve" in html and "skipped (quota)" in html and "balances" in html and "working" in html
+
+
+def test_a_fresh_project_with_no_database_yet_gets_an_empty_board(tmp_path):
+    db = tmp_path / "workspace" / "orchestrator.db"       # neither the folder nor the file exists yet
+    client = TestClient(create_app(db, balance_fn=lambda: {}))
+    r = client.get("/api/state")
+    assert r.status_code == 200
+    assert r.json()["board"] == [] and db.exists()

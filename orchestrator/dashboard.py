@@ -221,6 +221,10 @@ def create_app(db_path: str | Path, cfg: dict[str, Any] | None = None, launch_ru
     token = token or secrets.token_urlsafe(24)
     project = Path(project) if project else Path.cwd()
     workspace = Path(db_path).resolve().parent
+    if not Path(db_path).exists():
+        # a fresh project has no database until its first command; the read-only views would fail on every poll
+        workspace.mkdir(parents=True, exist_ok=True)
+        Store(db_path).close()
     launch = launch_run or (lambda: actions.spawn_run(project, workspace))
     app = FastAPI(title="Orchestrator dashboard", docs_url=None, redoc_url=None)
     app.state.token = token
