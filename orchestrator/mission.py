@@ -52,13 +52,13 @@ QUESTIONS: list[dict[str, Any]] = [
     {"id": "hard_constraints", "required": False,
      "ask": "What must never happen?",
      "hint": "Destructive actions, files or machines that are off limits, licenses you cannot accept, spending limits."},
-    {"id": "rigor", "required": True,
+    {"id": "rigor", "required": False,
      "ask": "How rigorous should the work be: quick_and_dirty, balanced, or rigorous?",
      "hint": "Quick prototypes are not gold-plated; critical results are not waved through."},
     {"id": "time_and_cost", "required": False,
      "ask": "Any deadline or money limit?",
      "hint": "e.g. 'finish within 3 days', '$40 total', 'unlimited on subscription CLIs but no API spend'."},
-    {"id": "autonomy", "required": True,
+    {"id": "autonomy", "required": False,
      "ask": "When you are not around, should the harness stop and wait for you, or make its best assumption and keep going?",
      "hint": "Recommended: 'assume_and_continue' for everything except safety, spending and refusals. Say what you want."},
     {"id": "decision_authority", "required": False,
@@ -72,7 +72,7 @@ QUESTIONS: list[dict[str, Any]] = [
     {"id": "failure_behavior", "required": False,
      "ask": "When something fails repeatedly (a worker, a tool, a model), what should happen?",
      "hint": "e.g. 'try another model, then another approach, then split it up, never give up before 5 distinct approaches'."},
-    {"id": "model_access", "required": True,
+    {"id": "model_access", "required": False,
      "ask": "Which models can the harness use, and what are their limits?",
      "hint": "CLIs (claude, codex) and their plan limits, API keys and budgets, local models (Ollama), GPUs."},
     {"id": "director_cli", "required": False,
@@ -96,10 +96,19 @@ QUESTIONS: list[dict[str, Any]] = [
     {"id": "self_improvement", "required": False,
      "ask": "Is the harness itself part of the work? May it change its own code?",
      "hint": "If yes: which branch, which checks must pass, and whether changes need your approval before taking effect."},
+    {"id": "model_guidance", "required": False,
+     "ask": "When should which model be used?",
+     "hint": "Plain-language guidance for choosing models per role or task (strongest for planning, cheap for bulk reading...)."},
     {"id": "anything_else", "required": False,
      "ask": "Anything else the harness should know about how you work or what you care about?",
      "hint": ""},
 ]
+
+
+# orca.yaml (the project's single human-edited file) uses friendlier names than the questionnaire ids
+FRIENDLY = {"goal": "goal", "done_when": "success_criteria", "checks": "success_checks", "never": "hard_constraints",
+            "quality": "rigor", "when_away": "autonomy", "notes": "anything_else"}
+DEFAULT_ANSWERS = {"rigor": "balanced", "autonomy": "assume_and_continue"}
 
 
 def _blank(answer: Any) -> bool:
@@ -141,6 +150,11 @@ def load(path: str | Path) -> dict[str, Any] | None:
     if not p.is_file():
         return None
     data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    if isinstance(data.get("mission"), dict):                 # orca.yaml: one file for everything
+        ans = {qid: data["mission"].get(k) for k, qid in FRIENDLY.items()}
+        ans["model_guidance"] = (data.get("models") or {}).get("guide")
+        data = {"version": 1, "source": "orca", "questions": [{**q, "answer": ans.get(q["id"]) if ans.get(q["id"]) is not None else ""}
+                                                              for q in QUESTIONS]}
     known = {q["id"]: q for q in data.get("questions") or [] if isinstance(q, dict) and "id" in q}
     for q in QUESTIONS:                      # questions added by a newer version of the harness appear as unanswered
         known.setdefault(q["id"], {**q, "answer": ""})
@@ -160,8 +174,7 @@ def status(cfg: dict[str, Any]) -> dict[str, Any]:
             "complete": not any(q.get("required") and _blank(q.get("answer")) for q in qs),
             "unanswered_required": [{"id": q["id"], "ask": q.get("ask", ""), "hint": q.get("hint", "")}
                                     for q in qs if q.get("required") and _blank(q.get("answer"))],
-            "unanswered_optional": [{"id": q["id"], "ask": q.get("ask", ""), "hint": q.get("hint", "")}
-                                    for q in qs if not q.get("required") and _blank(q.get("answer"))],
+            "unanswered_optional": [q["id"] for q in qs if not q.get("required") and _blank(q.get("answer"))],   # ids only: defaults apply
             "answered": [q["id"] for q in qs if not _blank(q.get("answer"))]}
 
 
@@ -183,6 +196,12 @@ def set_answer(cfg: dict[str, Any], question_id: str, answer: Any) -> dict[str, 
         scaffold(p)
         data = load(p)
     assert data is not None
+    if data.get("source") == "orca":
+        key = next((k for k, qid in FRIENDLY.items() if qid == question_id), None)
+        if key is None:
+            raise KeyError(f"{question_id!r} is not a mission field in orca.yaml (fields: {sorted(FRIENDLY)}; edit models.guide there for model guidance)")
+        _orca_set(p, key, answer)
+        return status(cfg)
     for q in data["questions"]:
         if q["id"] == question_id:
             q["answer"] = answer
@@ -191,6 +210,30 @@ def set_answer(cfg: dict[str, Any], question_id: str, answer: Any) -> dict[str, 
         raise KeyError(f"no question {question_id!r}; known: {[q['id'] for q in data['questions']]}")
     atomic_write(p, _dump(data))
     return status(cfg)
+
+
+def _orca_set(path: Path, key: str, value: Any) -> None:
+    """Change one `mission:` field in orca.yaml in place, keeping every comment and the rest of the file untouched."""
+    import json
+    import re
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, ln in enumerate(lines) if re.match(r"^mission:\s*(#.*)?$", ln))
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip() and not lines[i].startswith((" ", "#"))), len(lines))
+    new_val = json.dumps(value, ensure_ascii=False)
+    for i in range(start + 1, end):
+        if re.match(rf"^  {key}:(\s|$)", lines[i]):
+            comment = ""
+            if lines[i].count('"') % 2 == 0 and lines[i].count("'") % 2 == 0:
+                m = re.search(r"\s+#.*$", lines[i])
+                comment = m.group(0) if m else ""
+            j = i + 1
+            while j < end and (lines[j].startswith("    ") or lines[j].startswith("  - ")):
+                j += 1
+            lines[i:j] = [f"  {key}: {new_val}{comment}"]
+            break
+    else:
+        lines.insert(start + 1, f"  {key}: {new_val}")
+    atomic_write(path, "\n".join(lines) + "\n")
 
 
 def render_charter(cfg: dict[str, Any], max_chars: int = 6000) -> str:
@@ -208,6 +251,11 @@ def render_charter(cfg: dict[str, Any], max_chars: int = 6000) -> str:
             lines.append(f"## {q.get('ask', q['id'])}\n{a}")
         else:
             lines.append(f"## {q.get('ask', q['id'])}\n{str(a).strip()}")
+    if len(lines) > 1:
+        for qid, default in DEFAULT_ANSWERS.items():
+            q = next((x for x in data["questions"] if x["id"] == qid), None)
+            if q is not None and _blank(q.get("answer")):
+                lines.append(f"## {q.get('ask', qid)}\n{default} (default)")
     text = "\n".join(lines)
     return text[:max_chars] if len(lines) > 1 else ""
 

@@ -65,9 +65,9 @@ def daemon(tmp_path, script, cfg=None, **kw):
 def test_blank_brief_blocks_until_required_questions_are_answered(tmp_path):
     cfg = cfg_for(tmp_path, answered=False)
     st = mission.status(cfg)
-    assert not st["complete"] and {q["id"] for q in st["unanswered_required"]} >= {"goal", "success_criteria", "rigor", "autonomy"}
+    assert not st["complete"] and {q["id"] for q in st["unanswered_required"]} == {"goal", "success_criteria"}
     assert "incomplete" in mission.gate_error(cfg)
-    for qid in ("goal", "success_criteria", "rigor", "autonomy", "model_access"):
+    for qid in ("goal", "success_criteria"):
         mission.set_answer(cfg, qid, "x")
     assert mission.status(cfg)["complete"] and mission.gate_error(cfg) is None
 

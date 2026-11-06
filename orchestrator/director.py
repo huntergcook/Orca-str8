@@ -31,6 +31,7 @@ Reply with exactly one JSON object:
      {"type": "create_ticket", "department": "<dept>", "title": "...", "context": "...",
       "acceptance_criteria": ["..."], "return_spec": {"format": "...", "description": "..."},
       "rigor": "quick_and_dirty|balanced|rigorous", "worker_role": "<role the dept manager should use>",
+      "models": {"manager": "<model name>", "worker": "<model name>"},   # optional: only to override the default for this ticket
       "depends_on": ["<ticket ids that must be done first; omit unless truly required, independent work runs in parallel>"],
       "experiment": {"hypothesis": "...", "budget": "<time/cost cap>"}},   # experiment: only for trial-and-error work; the result carries outcome confirmed|refuted|inconclusive
      {"type": "set_state", "text": "<rewrite your state notes: goal, stopping criteria, rigor profile, constraints>"},
@@ -62,6 +63,8 @@ class Director:
         self._cap_why = ""
         self._oversight_at, self._drift_at = float("-inf"), time.monotonic()
         self._serial: dict[str, float] = {}
+        self._thin_since: float | None = None
+        self._last_nudge = float("-inf")
         self._serial_flagged: set[str] = set()
         if getattr(self.store, "tracer", None) is None:
             self.store.tracer = trace.Tracer(cfg, workspace)
@@ -189,7 +192,7 @@ class Director:
         return (f"{load_role('director')}\n\n{rules_section}# Departments\n{', '.join(self.managers) or '(none configured)'}\n\n"
                 f"# Your state notes\n{self.memory.read_state() or '(none yet)'}\n\n"
                 f"# Recent conversation with the human\n{self._tail_log()}\n\n"
-                f"{self._decisions_note()}{learnings.section(self.workspace)}{self._drift_note()}"
+                f"{self._models_note()}{self._decisions_note()}{learnings.section(self.workspace)}{self._drift_note()}"
                 f"# Ticket board\n{self.board()}\n\n{critical_path.analyze(self.store, int(self.cfg['policies'].get('max_parallel_tickets', 8)))['message']}\n\n{TOP_PROTOCOL}")
 
     def _ask(self, user_text: str, speaker: str) -> str:
@@ -241,6 +244,11 @@ class Director:
         if dept not in self.managers:
             self.store.add_event(None, "director", "bad_action", {"unknown_department": dept})
             return None
+        known = self._known_models()
+        wanted = {k: v for k, v in (a.get("models") or {}).items() if k in ("manager", "worker") and v}
+        bad = [v for v in wanted.values() if v not in known]
+        if bad:
+            raise ValueError(f"unknown model(s) {bad}; known: {sorted(known)}")
         fields = {k: a[k] for k in ("title", "context", "acceptance_criteria", "return_spec", "rigor",
                                     "worker_role", "workspace_refs", "worker_tickets", "code", "experiment") if k in a}
         deps = [str(d) for d in (a.get("depends_on") or []) if str(d).strip()]
@@ -248,6 +256,8 @@ class Director:
             self.store.get_ticket(d)                      # unknown id -> bad_action, not a silent never-runnable ticket
         if deps:
             fields["depends_on"] = deps
+        if wanted:
+            fields["models"] = wanted
         fields.setdefault("worker_role", "worker")
         fields["assignee"] = self.managers[dept].name
         fields["cc"] = ["director"]
@@ -273,6 +283,7 @@ class Director:
                         self.notify("info", "Work is running one step at a time", ana["message"])
             else:
                 self._serial.clear()
+            self._capacity_nudge(ana, now)
             h = mission.charter_hash(self.cfg)
             hp = self.workspace / "charter.hash"
             old = hp.read_text().strip() if hp.is_file() else None
@@ -289,6 +300,27 @@ class Director:
             raise
         except Exception as e:
             self.store.add_event(None, "director", "note", {"text": f"oversight skipped: {type(e).__name__}: {e}"[:300]})
+
+    def _capacity_nudge(self, ana: dict[str, Any], now: float) -> None:
+        """Few tickets running while capacity is free: ask the director (once per quiet period) to find parallel work."""
+        every = float(self.cfg["policies"].get("capacity_nudge_minutes", 15))
+        busy = ana["running"] + ana["ready"]
+        if not every or busy >= 3 or not ana["active"] or ana["stalled"]:
+            self._thin_since = None
+            return
+        if self._thin_since is None:
+            self._thin_since = now
+            return
+        if now - self._thin_since < 60 * every or now - self._last_nudge < 60 * every:
+            return
+        self._last_nudge = now
+        cap = int(self.cfg["policies"].get("max_parallel_tickets", 8))
+        self.store.add_event(None, "director", "capacity_nudge", {"busy": busy, "capacity": cap})
+        self.event_turn("capacity", f"Only {busy} ticket(s) have been running for {int(every)}+ minutes while capacity is {cap} tickets "
+                        f"and {self.cfg['policies'].get('max_parallel_workers', 8)} workers per department. {ana['message']} "
+                        "Look for independent work to start now: split broad tickets, start research/tests/tooling/benchmarks that "
+                        "do not need the running work, create the next phase's independent parts. If there truly is none, "
+                        "record why with `decide`.")
 
     def drift_review(self) -> dict[str, Any]:
         """An independent model checks the plan against the mission brief. Findings go to the director's prompt."""
@@ -319,6 +351,18 @@ class Director:
             return ""
         return (f"# Independent drift review (act on it)\n{r.get('advice', '')}\nOff-charter: {r.get('off_charter')}\n"
                 f"Missing: {r.get('missing')}\n\n")
+
+    def _known_models(self) -> set[str]:
+        ids = set(self._mgr_models) | set(self._wrk_models) | set(self.models) | set(self.cfg.get("prices") or {})
+        ids |= set(self.cfg.get("verification", {}).get("verifier_models") or [])
+        return ids
+
+    def _models_note(self) -> str:
+        mine = sorted(self._known_models())
+        if not mine:
+            return ""
+        return (f"# Models you can put on a ticket (default manager: {', '.join(self._mgr_models)}; default worker: "
+                f"{', '.join(self._wrk_models)})\n{', '.join(mine)}\n\n")
 
     def _deps_ready(self, t: dict[str, Any]) -> bool:
         """A ticket with unfinished dependencies waits. A failed or cancelled dependency is reported to the director once."""

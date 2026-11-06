@@ -95,7 +95,7 @@ class Daemon:
     def _load_cfg(self) -> dict[str, Any]:
         if self._cfg_override is not None:
             return self._cfg_override
-        return load_config(self.config_path if self.config_path.exists() else None)
+        return load_config(self.config_path if self.config_path.exists() else None, project=self.project)
 
     def _read_state(self) -> dict[str, Any]:
         try:

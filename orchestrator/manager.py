@@ -627,8 +627,12 @@ class Manager:
                 self.memory.append_journal(f"[{ticket_id}] delegated {len(t['worker_tickets'])} worker ticket(s) as written")
                 continue
             if not children:
-                d = self._decide(f"# Your ticket\n{ticket_prompt(t)}\n\nPlan the work. Independent pieces run in parallel, "
-                                 "so split work that can proceed side by side into separate worker tickets."
+                slots = int(self.cfg["policies"].get("max_parallel_workers", 8))
+                d = self._decide(f"# Your ticket\n{ticket_prompt(t)}\n\nPlan the work. You can run up to {slots} workers at the same "
+                                 "time, and workers are cheap compared with waiting. Create one worker ticket per independent piece "
+                                 "and start them together: do not do in sequence what can be done side by side, and do not give one "
+                                 "worker several separable jobs. If a non-trivial ticket yields fewer than 3 worker tickets, say in "
+                                 "`notes` why it cannot be split."
                                  + (f"\n\n# IMPORTANT\n{self._notice.pop(ticket_id)}" if ticket_id in self._notice else ""),
                                  ticket_id, "planning")
             else:

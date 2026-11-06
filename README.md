@@ -416,3 +416,25 @@ department (needs `routing_min_samples` outcomes); the scorecard is in `ctl boar
 - `python -m orchestrator.bench run bench/goals.yaml` runs canned goals through the real daemon with your configured models and
   appends results to `bench/results.jsonl`; `bench compare` flags regressions (a goal that stopped finishing, or token use up
   50%). Use it before and after any change to the harness, including changes the harness makes to itself.
+
+
+## Setup in one command, one file to edit (and macOS)
+```
+pip install -e .                       # once; gives you the `orca` command (Windows, macOS, Linux)
+orca init my-project --goal "Create hello.py that prints hello" --done-when "hello.py prints hello" --check "python hello.py" --start
+```
+`orca init` creates the project folder, picks the `claude` or `codex` CLI it finds on your PATH (`--cli none` for API keys), makes a
+git repository if there is none (code tickets need one), and writes **`orca.yaml`**, the only file you edit: the mission (only `goal`
+and `done_when` are required, the rest has defaults), `models` (which CLI, optional per-role overrides and the **model guide** that
+says when to use which model), `limits` (parallelism, hours, cost), and `notify`. Without `--goal` it just sets up and tells you
+which two lines to fill in. Then `orca start`, `orca status`, `orca report`, `orca stop`. Older projects with `config/orchestrator.yaml`
+and `config/mission.yaml` still work; `orca.yaml` wins wherever it says something.
+
+On macOS use `python3`; the daemon keeps the Mac awake with `caffeinate` (stay plugged in) and `orca install` creates a LaunchAgent.
+
+## Fan-out
+Defaults are 8 workers per department, 12 tickets at once, 16 children per ticket (`limits:` in orca.yaml). The director is told to
+split the goal into independent workstreams and create them together; managers are told how many workers they may use and to
+justify a non-trivial ticket that yields fewer than 3; and if fewer than 3 tickets have been running for 15 minutes
+(`policies.capacity_nudge_minutes`) the director is asked to find parallel work or record why there is none. The resource governor
+still lowers the cap when RAM or CPU is short. The director can also put a specific model on a ticket (`models` on `create_ticket`).

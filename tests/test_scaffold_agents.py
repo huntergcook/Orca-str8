@@ -4,7 +4,7 @@ from orchestrator.init import agents_text, command_text, scaffold
 def test_scaffold_writes_agents_md_for_codex_and_binds_the_project(tmp_path):
     root = tmp_path / "proj"
     written = {p.name for p in scaffold(root)}
-    assert {"AGENTS.md", "orchestrate.md", "orchestrator.yaml"} <= written
+    assert {"AGENTS.md", "orchestrate.md", "orca.yaml"} <= written
     agents = (root / "AGENTS.md").read_text(encoding="utf-8")
     proj = str(root.resolve())
     assert agents.startswith("# Orchestrator project: director instructions")

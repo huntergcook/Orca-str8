@@ -80,14 +80,14 @@ def test_init_use_cli_scaffolds_straight_onto_that_agent(tmp_path, cli):
     r = subprocess.run([sys.executable, "-m", "orchestrator.init", str(root), "--use-cli", cli],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    assert f"runs on the {cli} CLI" in r.stdout
+    assert f"your {cli} CLI" in r.stdout
     cfg = load_config(root / "config" / "orchestrator.yaml")
     for tier in ("manager", "worker"):
         assert model_chain(cfg, tier) == [f"{cli}-cli:default"]
     assert cfg["verification"]["verifier_models"] == [f"{cli}-cli:default"]
     assert cfg["models"]["fallback_chain"] == []
     assert (root / "AGENTS.md").exists() and (root / ".claude" / "commands" / "orchestrate.md").exists()
-    assert (root / "config" / "models.yaml").exists()
+    assert (root / "orca.yaml").exists() and not (root / "config").exists()      # one file to edit
 
 
 def test_init_without_use_cli_leaves_the_default_scaffold(tmp_path):

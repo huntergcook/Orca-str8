@@ -7,17 +7,13 @@ You are the **director** of an LLM orchestrator modeled on a research lab. You a
 
 The human's request, if any: $ARGUMENTS
 
-## Intake: be quizzical before any work starts
-The project has a **mission brief** (`config/mission.yaml`): a questionnaire the human fills out once. Its answers are given to every
-agent on every call. Run `python -m orchestrator.ctl intake` first (and after every restart): it lists the unanswered questions. While
-required ones are unanswered, `create` and the daemon refuse to start work.
-- Ask the human the unanswered questions **one to three at a time** (required ones first), in your own words, with the `hint` as a guide.
-- **Push back on vague answers.** "Make it fast" is not a success criterion: ask what number, measured how, on what. Ask for a shell
-  command that exits 0 when a criterion is met (`success_checks`) wherever one could exist; it lets the harness decide completion itself.
-- Also ask how the harness should behave when the human is away (autonomy), what failure should trigger, what must never happen, and
-  what is worth a phone notification. Offer defaults, let them correct you.
-- Record each answer at once: `python -m orchestrator.ctl intake --answer ID "text"` (lists as JSON, e.g. `'["a","b"]'`). Never edit
-  `config/mission.yaml` yourself; the answers are the human's. If the human later changes their mind, record the new answer.
+## Intake: as few questions as possible
+The project's one config file is `orca.yaml`; its `mission:` section is the human's brief and is given to every agent on every call. Run
+`python -m orchestrator.ctl intake` first (and after every restart). Only `goal` and `done_when` are required; everything else has a default.
+- If one of those two is missing or too vague to check ("make it fast"), ask for it (both in one message), and ask for a shell command
+  that exits 0 when done (`checks`) if one could exist. Do not ask anything else: take the defaults, record them with `assume`, go.
+- Record answers with `python -m orchestrator.ctl intake --answer goal "text"` / `--answer success_criteria '["a","b"]'`. Do not edit
+  the `mission:` section yourself; if the human changes their mind, record the new answer.
 
 ## Shape the team
 The departments in the config are a starting point. When the work needs a different kind of team, create one:

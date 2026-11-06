@@ -8,6 +8,9 @@ orchestrator by absolute path, and a README. It does not run git or write any se
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -57,6 +60,51 @@ interfaces:
   dashboard: {{ enabled: true, port: 8080 }}
 """
 
+ORCA = """\
+# orca.yaml - the ONE file you edit. Everything not set here has a sensible default.
+# Fill in the two REQUIRED lines under `mission`, check the `models` line, and you can start.
+# Edit it any time; changes apply at the next call. Every agent is shown the mission section on every call.
+
+mission:
+  goal: ""             # REQUIRED. The outcome you want (not the method). e.g. "Skyrim VR holds 90 fps in Whiterun"
+  done_when: []        # REQUIRED. Checkable criteria, e.g. ["all tests pass", "frame time under 11 ms in scene X"]
+  checks: []           # optional: shell commands that exit 0 when done, e.g. ["python -m pytest -q"]. Lets it finish by itself.
+  never: []            # optional: off limits, must never happen, or out of scope
+  quality: balanced    # quick_and_dirty | balanced | rigorous
+  when_away: assume_and_continue   # or stop_and_wait. The director decides for you either way, except safety and money.
+  notes: ""            # optional: anything else it should know about you or the project
+
+models:
+  cli: {cli}           # claude | codex : uses your logged-in CLI, no API key. Delete this line to use API keys (see .env.example).
+  # Optional overrides, one per role. A bare name means a model of the CLI above; or write provider:model.
+  director: ""         # makes the plan and the calls: the strongest model you have
+  manager: ""          # splits work and reviews it: strong, mid-priced
+  worker: ""           # does the bulk: fast and cheap
+  verifier: ""         # checks the work: should differ from the worker
+  guide: |
+    director: strongest model. Few calls, expensive to get wrong (planning, trade-offs, deciding what counts as done).
+    manager: strong mid-tier. Splits tickets into parallel pieces and reviews results.
+    worker: fast, cheap tier for bulk reading, searching, summarising, boilerplate and well-specified edits.
+      Step up to the strongest model for hard debugging, novel reasoning and the final version of important code.
+    verifier: a different model (ideally a different vendor) from whatever produced the work.
+    on repeated failure: retry on the next stronger model before changing the approach.
+
+verify: true           # independent verification of results (costs more, catches more)
+
+limits:
+  parallel_workers: 8  # workers per department at once
+  parallel_tickets: 12 # top-level tickets at once
+  max_hours: null      # stop after this long (null = no limit)
+  max_cost_usd: null   # API spend cap (null = none)
+  max_tokens: null
+
+notify:
+  ntfy: ""             # e.g. https://ntfy.sh/my-secret-topic : phone notifications. Always logged to workspace/notifications.log
+  webhook: ""
+
+# departments: leave this out. Default: research, tooling, software, verification. The director adds more when the work needs them.
+"""
+
 GITIGNORE = """\
 .env
 workspace/
@@ -64,7 +112,8 @@ workspace/
 *.db-wal
 *.db-shm
 __pycache__/
-# the brief is edited while the harness runs; tracked, it would block `code release` (needs a clean tree)
+# edited while the harness runs; tracked, it would block `code release` (needs a clean tree)
+orca.yaml
 config/mission.yaml
 """
 
@@ -80,14 +129,13 @@ README = """\
 
 Project run by the orchestrator at `{orch}`.
 
-0. **Fill in `config/mission.yaml`** (the mission brief): your goal, success criteria, rigor, how it should behave when
-   you are away. Every agent reads it on every call, and no work starts until its required questions are answered. Or
-   start your agent and let the director interview you.
-1. Copy `.env.example` to `.env` and add your `DEEPSEEK_API_KEY`.
+1. **Edit `orca.yaml`**: it is the only file you need. Fill in `goal` and `done_when` (the rest has defaults), and check `models.cli`.
+   Every agent is shown the mission section on every call.
 2. Pre-flight: `python -m orchestrator.smoke`
-3. Dashboard (second terminal): `python -m orchestrator.dashboard` then open http://127.0.0.1:8080
-4. Start your agent in this folder: Claude Code (`claude`, then `/orchestrate <what you want done>`) or Codex (`codex`, then "act as the orchestrator director: <what you want done>"; it reads AGENTS.md).
-5. No API keys? Run `python -m orchestrator.ctl models use-cli codex` (or `claude`) to run every role on that CLI.
+3. Run it: `python -m orchestrator.daemon start` (unattended), or start your agent in this folder: Claude Code (`claude`, then
+   `/orchestrate`) or Codex (it reads AGENTS.md).
+4. Dashboard (optional): `python -m orchestrator.dashboard`, then open http://127.0.0.1:8080
+5. Using API keys instead of a CLI: delete `cli:` in orca.yaml, copy `.env.example` to `.env`, and add the keys.
 
 To let it run unattended until the goal is met: `python -m orchestrator.daemon start` (restarts itself if it dies), and
 `python -m orchestrator.daemon install` to start it at logon. `python -m orchestrator.daemon status` shows where it is.
@@ -136,13 +184,11 @@ def agents_text(project: str | Path) -> str:
     return head + body
 
 
-def scaffold(target: str | Path, force: bool = False) -> list[Path]:
+def scaffold(target: str | Path, force: bool = False, cli: str = "claude") -> list[Path]:
     root = Path(target)
-    if root.exists() and any(root.iterdir()) and not force:
-        raise FileExistsError(f"{root} is not empty (use --force to add missing files)")
+    root.mkdir(parents=True, exist_ok=True)          # only missing files are written; nothing existing is touched
     files = {
-        "config/orchestrator.yaml": CONFIG.format(orch=ORCH_HOME),
-        "config/mission.yaml": mission_text(),
+        "orca.yaml": ORCA.format(cli=cli),
         ".env.example": ENV_EXAMPLE,
         ".gitignore": GITIGNORE,
         "README.md": README.format(name=root.name, orch=ORCH_HOME),
@@ -160,33 +206,79 @@ def scaffold(target: str | Path, force: bool = False) -> list[Path]:
     return written
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(prog="orchestrator.init")
-    ap.add_argument("target")
-    ap.add_argument("--force", action="store_true")
-    ap.add_argument("--use-cli", choices=["claude", "codex"],
-                    help="run every manager/worker/verifier on this CLI (no API key needed) instead of DeepSeek")
-    a = ap.parse_args()
-    try:
-        written = scaffold(a.target, a.force)
-    except FileExistsError as e:
-        print(f"error: {e}")
-        return 1
+def detect_cli(which=shutil.which) -> str | None:
+    for name in ("claude", "codex"):
+        if which(name):
+            return name
+    return None
+
+
+def _git_ready(root: Path) -> str:
+    """Code tickets need a git repo with a commit. Make one if the folder has none."""
+    if shutil.which("git") is None:
+        return "git is not installed: code tickets (the Software department) will not work until it is"
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True)
+    if run("rev-parse", "--is-inside-work-tree").returncode == 0:
+        return "git: using the existing repository"
+    run("init", "-q")
+    run("add", "-A")
+    r = run("-c", "user.name=orca", "-c", "user.email=orca@localhost", "commit", "-q", "-m", "orca: project start")
+    return "git: created a repository with a first commit" if r.returncode == 0 else f"git init done, first commit failed: {r.stderr.strip()[:120]}"
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="orchestrator.init", description="Set up a project folder in one command.")
+    ap.add_argument("target", nargs="?", default=".", help="project folder (default: the current folder)")
+    ap.add_argument("--cli", choices=["auto", "claude", "codex", "none"], default="auto",
+                    help="which logged-in CLI runs the models (auto = whichever is installed; none = use API keys)")
+    ap.add_argument("--use-cli", choices=["claude", "codex"], dest="cli_old", help=argparse.SUPPRESS)
+    ap.add_argument("--goal", help="fill in the goal now")
+    ap.add_argument("--done-when", action="append", dest="done_when", help="a success criterion (repeat for several)")
+    ap.add_argument("--check", action="append", help="a shell command that exits 0 when done (repeat for several)")
+    ap.add_argument("--start", action="store_true", help="start the unattended daemon right away (needs --goal and --done-when)")
+    ap.add_argument("--no-git", action="store_true", help="do not create a git repository")
+    ap.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
+    a = ap.parse_args(argv)
+    cli = a.cli_old or a.cli
+    found = detect_cli()
+    if cli == "auto":
+        cli = found or "none"
+    root = Path(a.target).resolve()
+    written = scaffold(root, a.force, cli="claude" if cli == "none" else cli)
+    if cli == "none":                                   # API keys: take the cli line out of the new file
+        f = root / "orca.yaml"
+        if f in written:
+            f.write_text("\n".join(ln for ln in f.read_text(encoding="utf-8").splitlines() if not ln.lstrip().startswith("cli:")) + "\n",
+                         encoding="utf-8")
     for p in written:
         print(f"created {p}")
-    if a.use_cli:
-        from .modelcfg import use_cli
-        use_cli(Path(a.target) / "config" / "orchestrator.yaml", a.use_cli)
-        print(f"models: every manager, worker and verifier now runs on the {a.use_cli} CLI (config/models.yaml)")
-    if not (Path(a.target) / ".git").exists():
-        print("\nnote: this folder is not a git repository. Code tickets (the Software department) need one: "
-              "run `git init` and make a first commit in it, or set code.repo in config/orchestrator.yaml.")
-    if a.use_cli:
-        print("\nNext: fill in config/mission.yaml (`python -m orchestrator.ctl intake`), run `python -m orchestrator.smoke` from "
-              "that folder, then `python -m orchestrator.daemon --project . start`. No API key is needed for the CLI.")
-    else:
-        print(f"\nNext: add DEEPSEEK_API_KEY to {Path(a.target) / '.env'} (copy .env.example), then run "
-              "`python -m orchestrator.smoke` from that folder.")
+    print(f"models: {'your ' + cli + ' CLI (no API key needed)' if cli != 'none' else 'API keys: copy .env.example to .env and fill in the keys you have'}"
+          + ("" if found or cli == "none" else f"   WARNING: `{cli}` was not found on PATH"))
+    if not a.no_git:
+        print(_git_ready(root))
+    py = "python" if os.name == "nt" else "python3"
+    if a.goal or a.done_when or a.check:
+        from . import mission
+        cfg = {"mission_file": str(root / "orca.yaml")}
+        for qid, val in (("goal", a.goal), ("success_criteria", a.done_when), ("success_checks", a.check)):
+            if val:
+                mission.set_answer(cfg, qid, val)
+        print("mission: recorded in orca.yaml")
+    ready = bool(a.goal and a.done_when)
+    if a.start:
+        if not ready:
+            print("\n--start needs --goal and --done-when; edit orca.yaml and run `orca start`.")
+            return 1
+        from .daemon import _spawn_detached
+        _spawn_detached(root)
+        print(f"\nStarted. Check on it:  cd {root} && orca status    (report: orca report)")
+        return 0
+    print("\nNext:")
+    if not ready:
+        print(f"  1. Edit {root / 'orca.yaml'}: fill in `goal` and `done_when` (everything else has defaults).")
+    print(f"  {'2' if not ready else '1'}. cd {root}  and run:  orca start      (or `{py} -m orchestrator.daemon --project . start`)")
+    print("     Check progress any time with `orca status`; read the result with `orca report`.")
     return 0
 
 

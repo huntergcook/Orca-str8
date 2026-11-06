@@ -44,9 +44,9 @@ DEFAULTS: dict[str, Any] = {
         "capability_retry_limit": 3,
         "on_safety_refusal": "retry_once_then_escalate_to_human",
         "max_subworker_depth": 2,
-        "max_children_per_agent": 8,
-        "max_parallel_tickets": 8,     # top-level tickets (departments) worked at the same time
-        "max_parallel_workers": 4,     # workers per department running at the same time
+        "max_children_per_agent": 16,
+        "max_parallel_tickets": 12,    # top-level tickets (departments) worked at the same time
+        "max_parallel_workers": 8,     # workers per department running at the same time
         "max_concurrent_calls": 8,     # model calls in flight at once, across everything (provider rate limits)
         "max_tool_steps": 40,          # tool calls per worker ticket (with a countdown before the end)
         "max_code_tool_steps": 80,     # code workers read and edit more: their own, larger allowance
@@ -64,6 +64,7 @@ DEFAULTS: dict[str, Any] = {
         "max_cpu_load": 1.5,           # 1-min load per core above which parallelism is halved (POSIX only)
         "outcome_routing": True,       # demote worker models with a clearly poor record in a department
         "routing_min_samples": 5,
+        "capacity_nudge_minutes": 15,  # when fewer than 3 tickets are running for this long, the director is told to find parallel work; 0 = off
         "max_departments": 12,         # departments the director may have in total (config + ones it creates)
         "dynamic_department_privileges": True,   # departments the director creates may write code / acquire tools (never hardware)
         "max_restarts": 6,             # times a stopped/crashed manager ticket is restarted before it is escalated
@@ -139,19 +140,85 @@ def enter_project(project: str | Path | None = None) -> Path | None:
     return p
 
 
-def load_config(path: str | Path | None = None) -> dict[str, Any]:
+ORCA_FILE = "orca.yaml"
+
+DEFAULT_DEPARTMENTS: dict[str, Any] = {
+    "research": {"manager_role": "roles/research_manager.md"},
+    "tooling": {"manager_role": "roles/tooling_manager.md", "can_acquire_tools": True},
+    "software": {"manager_role": "roles/software_manager.md"},
+    "verification": {"manager_role": "roles/verification_manager.md", "diverse_models": True},
+}
+
+
+def apply_orca(cfg: dict[str, Any], data: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Layer the project's single human-edited file (orca.yaml) over the configuration. Everything in it is optional."""
+    m = data.get("models") or {}
+    cli = str(m.get("cli") or "").strip() or None
+    if cli:
+        prov = f"{cli}-cli"
+        if prov not in cfg["providers"]:
+            raise ValueError(f"orca.yaml: models.cli must be one of claude, codex (got {cli!r})")
+        for tier in ("director", "manager", "worker"):
+            cfg["models"][tier] = {"provider": prov, "model": "default"}
+        cfg["models"]["fallback_chain"] = []
+        cfg["verification"]["verifier_models"] = [qualify(cfg, prov, "default")]
+    for tier in ("director", "manager", "worker", "verifier"):
+        v = m.get(tier)
+        vals = [str(x).strip() for x in (v if isinstance(v, list) else [v]) if x and str(x).strip()]
+        if not vals:
+            continue
+        chain = []
+        for s in vals:
+            prov, sep, model = s.partition(":")
+            if not sep:
+                prov, model = (f"{cli}-cli" if cli else cfg["models"].get(tier if tier != "verifier" else "worker", {}).get("provider")), s
+            chain.append(qualify(cfg, prov, model) if tier == "verifier" else {"provider": prov, "model": model})
+        if tier == "verifier":
+            cfg["verification"]["verifier_models"] = chain
+        else:
+            cfg["models"][tier] = chain[0]
+    if "verify" in data:
+        cfg["verification"]["enabled"] = bool(data["verify"])
+    lim = data.get("limits") or {}
+    for key, (sect, name) in {"parallel_workers": ("policies", "max_parallel_workers"), "parallel_tickets": ("policies", "max_parallel_tickets"),
+                              "max_cost_usd": ("budget", "max_cost_usd"), "max_tokens": ("budget", "max_tokens"),
+                              "max_restarts": ("policies", "max_restarts")}.items():
+        if lim.get(key) is not None:
+            cfg[sect][name] = lim[key]
+    if lim.get("max_hours") is not None:
+        cfg["budget"]["max_minutes"] = float(lim["max_hours"]) * 60
+    for k, v in (data.get("notify") or {}).items():
+        if v:
+            cfg["notify"][k] = v
+    if isinstance(data.get("departments"), dict) and data["departments"]:
+        cfg["departments"] = data["departments"]
+    elif not cfg.get("departments"):
+        cfg["departments"] = copy.deepcopy(DEFAULT_DEPARTMENTS)
+    if isinstance(data.get("mission"), dict):
+        cfg["mission_file"] = str(path)
+    cfg["model_guide"] = str(m.get("guide") or "").strip()
+    cfg["_orca_file"] = str(path)
+    return cfg
+
+
+def load_config(path: str | Path | None = None, project: str | Path | None = None) -> dict[str, Any]:
     # Look for .env in the working directory and next to the config's parent (the repo root).
     load_dotenv(Path.cwd() / ".env")
     if path is not None:
         load_dotenv(Path(path).resolve().parent.parent / ".env")
+    root = Path(project) if project is not None else (Path(path).resolve().parent.parent if path is not None else None)
     if path is None:
-        return copy.deepcopy(DEFAULTS)
-    data = _legacy_names((yaml.safe_load(Path(path).read_text()) or {}) if Path(path).exists() else {})
-    cfg = _merge(DEFAULTS, data)
-    overlay = overlay_path(path)
-    if overlay.exists():                       # model choices made with `ctl models` win over the base file
-        over = _legacy_names(yaml.safe_load(overlay.read_text()) or {})
-        cfg = _merge(cfg, {k: v for k, v in over.items() if k in ("models", "verification", "providers")})
+        cfg = copy.deepcopy(DEFAULTS)
+    else:
+        data = _legacy_names((yaml.safe_load(Path(path).read_text()) or {}) if Path(path).exists() else {})
+        cfg = _merge(DEFAULTS, data)
+        overlay = overlay_path(path)
+        if overlay.exists():                   # model choices made with `ctl models` win over the base file
+            over = _legacy_names(yaml.safe_load(overlay.read_text()) or {})
+            cfg = _merge(cfg, {k: v for k, v in over.items() if k in ("models", "verification", "providers")})
+    orca = root / ORCA_FILE if root is not None else None
+    if orca is not None and orca.is_file():    # the one file the human edits; wins over the rest where it says something
+        cfg = apply_orca(cfg, yaml.safe_load(orca.read_text(encoding="utf-8")) or {}, orca)
     return cfg
 
 

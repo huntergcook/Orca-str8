@@ -10,6 +10,9 @@ dependencies = ["jsonschema>=4", "pyyaml>=6", "fastapi>=0.110", "uvicorn>=0.29",
 dev = ["pytest"]
 anthropic = ["anthropic>=1"]
 
+[project.scripts]
+orca = "orchestrator.orca:main"
+
 [tool.setuptools]
 packages = ["orchestrator"]
 

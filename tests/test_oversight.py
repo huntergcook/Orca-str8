@@ -171,3 +171,83 @@ def test_bench_runs_a_goal_offline_and_compares(tmp_path):
     p = tmp_path / "r.jsonl"
     p.write_text(json.dumps({**res, "finished": True, "tokens": 10}) + "\n" + json.dumps({**res, "finished": False, "tokens": 10}) + "\n")
     assert "REGRESSION" in bench.compare(p)
+
+
+# ----------------------------------------------------------------- one config file, easy setup, fan-out
+
+def test_orca_yaml_is_the_single_config_and_set_answer_keeps_comments(tmp_path):
+    from orchestrator import init, mission
+    from orchestrator.config import load_config, model_chain
+    init.scaffold(tmp_path, cli="codex")
+    f = tmp_path / "orca.yaml"
+    cfg = load_config(None, project=tmp_path)
+    assert model_chain(cfg, "worker") == ["codex-cli:default"] and set(cfg["departments"]) >= {"research", "software"}
+    assert not mission.status(cfg)["complete"]
+    mission.set_answer(cfg, "goal", "build X")
+    mission.set_answer(cfg, "success_criteria", ["a", "b"])
+    mission.set_answer(cfg, "success_checks", ["pytest -q"])
+    text = f.read_text()
+    assert "# REQUIRED" in text and "models:" in text                      # comments and other sections survive
+    cfg = load_config(None, project=tmp_path)
+    st = mission.status(cfg)
+    assert st["complete"] and mission.success_checks(cfg) == ["pytest -q"]
+    charter = mission.render_charter(cfg)
+    assert "build X" in charter and "balanced" in charter and "director: strongest model" in charter
+
+
+def test_orca_yaml_overrides_and_limits(tmp_path):
+    from orchestrator.config import load_config, model_chain
+    (tmp_path / "orca.yaml").write_text("mission: {goal: g, done_when: [d]}\nmodels:\n  cli: claude\n  worker: haiku\n  director: opus\n"
+                                        "limits: {parallel_workers: 20, max_hours: 2}\nverify: false\n")
+    cfg = load_config(None, project=tmp_path)
+    assert model_chain(cfg, "worker") == ["claude-cli:haiku"] and model_chain(cfg, "manager") == ["claude-cli:default"]
+    assert cfg["policies"]["max_parallel_workers"] == 20 and cfg["budget"]["max_minutes"] == 120
+    assert cfg["verification"]["enabled"] is False
+
+
+def test_init_one_command_sets_up_and_records_the_mission(tmp_path):
+    from orchestrator import init, mission
+    from orchestrator.config import load_config
+    root = tmp_path / "p"
+    assert init.main([str(root), "--cli", "claude", "--goal", "make hello", "--done-when", "prints hello",
+                      "--check", "python hello.py", "--no-git"]) == 0
+    cfg = load_config(None, project=root)
+    assert mission.status(cfg)["complete"] and mission.success_checks(cfg) == ["python hello.py"]
+    assert (root / "AGENTS.md").exists() and not (root / "config").exists()
+    assert init.main([str(root), "--cli", "claude", "--no-git"]) == 0           # safe to re-run: nothing is overwritten
+    assert "make hello" in (root / "orca.yaml").read_text()
+
+
+def test_orca_command_dispatch(tmp_path, capsys):
+    from orchestrator import orca
+    assert orca.main(["help"]) == 0 and "orca start" in capsys.readouterr().out
+
+
+def test_director_can_put_a_known_model_on_a_ticket_and_rejects_unknown(tmp_path):
+    ctl, _ = mk(tmp_path)
+    d = ctl.director
+    known = sorted(d._known_models())[0]
+    tid = d.create_ticket(dict(TICKET, models={"worker": known}))
+    assert ctl.store.get_ticket(tid)["models"] == {"worker": known}
+    with pytest.raises(ValueError):
+        d.create_ticket(dict(TICKET, models={"worker": "no-such-model"}))
+    assert known in d._system_prompt()
+
+
+def test_capacity_nudge_asks_the_director_to_fan_out(tmp_path):
+    ctl, _ = mk(tmp_path, [j(say="ok", actions=[])], capacity_nudge_minutes=1)
+    d = ctl.director
+    d.create_ticket(dict(TICKET, title="only one"))
+    ana = critical_path.analyze(ctl.store)
+    d._capacity_nudge(ana, 1000.0)                    # starts the clock
+    d._capacity_nudge(ana, 1000.0 + 61)               # a quiet period has passed
+    assert any(e["type"] == "capacity_nudge" for e in ctl.store.events(None))
+    assert any("Look for independent work" in m["messages"][0]["content"] for m in ctl.provider.inner.calls)
+    d._capacity_nudge(ana, 1000.0 + 62)               # but only once per quiet period
+    assert len(ctl.provider.inner.calls) == 1
+
+
+def test_manager_planning_prompt_pushes_fan_out(tmp_path):
+    from orchestrator.config import load_config
+    assert load_config(None)["policies"]["max_parallel_workers"] >= 8
+    assert "fan out" in open("roles/director.md").read().lower()
