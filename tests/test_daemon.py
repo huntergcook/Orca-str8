@@ -355,3 +355,19 @@ def test_bad_departments_are_refused_and_retiring_needs_an_idle_one(tmp_path):
         ctl.director.retire_department("docs")
     assert "docs" in ctl.department("list")["departments"]
     ctl.close()
+
+
+def test_launchd_plist_and_mac_keep_awake(monkeypatch, tmp_path):
+    import plistlib
+    plist = plistlib.loads(winsys.launchd_plist(tmp_path).encode())
+    assert plist["KeepAlive"] is True and plist["ProgramArguments"][-1] == "supervise"
+    calls = []
+
+    class P:
+        def terminate(self):
+            calls.append("t")
+    monkeypatch.setattr(winsys.sys, "platform", "darwin")
+    monkeypatch.setattr(winsys.subprocess, "Popen", lambda args, **k: calls.append(args) or P())
+    assert winsys.keep_awake() is True and calls[0][0] == "caffeinate"
+    winsys.allow_sleep()
+    assert calls[-1] == "t"

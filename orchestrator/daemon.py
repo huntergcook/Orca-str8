@@ -554,6 +554,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(" ".join(args))
                 return 0
             return subprocess.call(args)
+        if sys.platform == "darwin":
+            plist = winsys.launchd_plist(project)
+            path = Path.home() / "Library" / "LaunchAgents" / "com.orca.daemon.plist"
+            if a.dry:
+                print(plist)
+                return 0
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(plist, encoding="utf-8")
+            return subprocess.call(["launchctl", "load", "-w", str(path)])
         print(winsys.systemd_unit(project))
         print("# save as ~/.config/systemd/user/orca.service, then: systemctl --user enable --now orca", file=sys.stderr)
         return 0
