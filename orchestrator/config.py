@@ -72,6 +72,7 @@ DEFAULTS: dict[str, Any] = {
         "stall_hours": 4,              # no progress anywhere for this long -> the director must change strategy
         "model_retry_minutes": 30,     # how long to wait before re-trying a model that hit its quota/usage limit
         "director_timeout_minutes": 20,  # a director turn that takes longer than this counts as a failure
+        "allow_web_fetch": True,       # workers may read public https pages (fetch_url); false = no web access
     },
     "verification": {
         "enabled": False,        # gate manager results through independent verifiers
